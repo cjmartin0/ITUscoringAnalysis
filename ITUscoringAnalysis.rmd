@@ -303,18 +303,20 @@ ethnicitiesList <- c("White","Black","Hispanic","Asian")
 # These are the data files from physionet.org via the Google BigQuery platform.
 # The data files cannot be supplied with this code as it requires approved access to the MIMIC-III and eICU database.
 # SQL code was used to create and extract SOFA scores.
-# This is the 
+# This is the SOFA scores extracted using the SQl code described above. ('MIMIC_SOFAscores_SQL.txt')
 SOFA <- read.csv(file="bq-results-20200805-214538-n690szu0x80_SOFAscoresAdmission_DUMMY.csv", stringsAsFactors = FALSE)
+
 OASIS <- read.csv(file="bq-results-20200806-202359-anbq1d2oo30vOASIS_DUMMY.csv", stringsAsFactors = FALSE)
 patients <- read.csv(file="bq-results-20200806-225103-mcsk0rb8h76l_Patients_DUMMY.csv", stringsAsFactors = FALSE)
 admissions <- read.csv(file="bq-results-20200806-231458-u3iow35qz30w_Admissions_DUMMY.csv", stringsAsFactors = FALSE)
 icustays <- read.csv(file = "bq-results-20200808-092553-ttzoex49foff_ICUSTAYS_DUMMY.csv")
-DoBgender <- read.csv("bq-results-20200806-082126-2pfodnem4miv_DOBgender_DUMMY.csv")
+# A table of ethicities derived from teh 'admisisions' table.
 ethnicitiesM <- read.csv("bq-results-20200806-081503-l2nmx172wnn4_SubjectsEthnicities_DUMMY.csv")
-
+# This is the table 'oasis'.
 admissions$DiedHosp <- !(admissions$DEATHTIME == "")
-
+# A table of ethicities derived from teh 'admisisions' table.
 patients$ETHNICITY <- ethnicitiesM$ETHNICITY[match(patients$SUBJECT_ID, ethnicitiesM$SUBJECT_ID)]
+# This is the table 'patients'.
 patients <- patients[,c("SUBJECT_ID","GENDER","DOB","ETHNICITY")]
 
 MIMICnos <- list()
