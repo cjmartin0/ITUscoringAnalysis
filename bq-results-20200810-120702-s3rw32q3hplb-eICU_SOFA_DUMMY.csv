@@ -1,0 +1,2 @@
+patientunitstayid,day,sofa_resp,sofa_gcs,sofa_circ,sofa_liver,sofa_hematology,sofa_renal,sofa,sofa_wo_gcs
+141141,1,0,0,1,2,0,2,5,5

@@ -1,0 +1,2 @@
+subject_id,hadm_id,icustay_id,icustay_age_group,hospital_expire_flag,icustay_expire_flag,oasis,oasis_PROB,age,age_score,preiculos,preiculos_score,gcs,gcs_score,heartrate,heartrate_score,meanbp,meanbp_score,resprate,resprate_score,temp,temp_score,urineoutput,urineoutput_score,mechvent,mechvent_score,electivesurgery,electivesurgery_score
+9922,123321,200010,adult,0,0,56,0.72420333,84,9,1,5,14,3,91,1,171,3,33,6,35.5,4,664,10,1,9,0,6

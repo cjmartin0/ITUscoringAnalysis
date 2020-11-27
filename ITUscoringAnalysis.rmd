@@ -1,0 +1,1755 @@
+---
+  title: "ITU risk scoring analysis by ethnicity"
+author: "Dr C J Martin"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  word_document: default
+pdf_document: default
+---
+  
+  This R code analyses data extracted from the eICU and MIMIC-III database of individual patient clinicla data from ITUs in the USA.
+It was accessed from www.physionet.org as part of an approved project in association with the following authors:
+  
+  Rahuldeb Sarkar(1,2), Christopher Martin(3,4), Heather Mattie(5), Judy Wawira Gichoya(6), David J. Stone(7), Leo Anthony Celi(8,9,10)
+
+1. Departments of Respiratory Medicine and Critical Care, Medway NHS Foundation Trust, Gillingham, Kent, UK; 
+2. Faculty of Life Sciences, King’s College London, London, UK
+3. UCL Institute for Health Informatics, London, UK; 
+4. Crystallise Ltd, UK.
+5. Department of Biostatistics, Harvard T.H. Chan School of Public Health, Boston, MA, USA, 02115
+6. Interventional Radiology & Informatics, Department of Radiology & Imaging Sciences, Emory University, 1364 Clifton Rd NE Suite AG08 Atlanta, GA 30322
+7. Departments of Anesthesiology and Neurosurgery, and the Center for Advanced Medical Analytics, University of Virginia School of Medicine, Charlottesville, VA, 22908   
+8. Laboratory for Computational Physiology, Massachusetts Institute of Technology, Cambridge, MA, USA 20139; 9Division of Pulmonary, Critical Care and Sleep Medicine, Beth Israel Deaconess Medical Center, Boston, MA, USA 02215; 10Department of Biostatistics, Harvard T.H. Chan School of Public Health, Boston, MA, USA, 02115
+
+
+
+```{r setup, include=FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr) # ntile function.
+library(knitr)  # Rmarkdown.
+library(rsq)   # To calculate the partial R2 from the logistic regression.
+library(ems) # For the SMR function.
+library(gbm) # calibrate.plot function
+library(pROC) # For generating ROC curves (roc function).
+library(reshape2) # Used for 'dcast' function.
+
+source("calibrationPlot.r")
+
+# Parameters for graphic output.
+figWidth <- 7
+figHeight <- 6
+figWidth2 <- 5
+figHeight2 <- 4
+
+knitr::opts_chunk$set(out.width = "50%")
+options(OutDec="\xB7")
+```
+
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, results='hide', fig.width=12, fig.height=8}
+##If the package 'forestplot' is not installed then Rstudio should prompt 
+##you to install it. If not then remove the hashtag from the line below
+##before running the script and it will be installed.
+#############################################################################################
+
+plotForest <- function(theData, Vhispanic, Vblack, Vwhite, Vasian, Vall, theScore, theMetric, doPNG, theCounts, tag ){
+  library(forestplot)
+  
+  options(OutDec = ".")
+  
+  source<-c("Ethnic group",c( "Hispanic","Black", "White","Asian","All"))
+  year<-c("Year",c("0","0","0","0","0"))
+  numberInSample <- theCounts
+  # measure<-c("Data set",rep(theData, 5))
+  value<-c("Value",Vhispanic[2],Vblack[2],Vwhite[2],Vasian[2],Vall[2])
+  isSummary<-c(TRUE,FALSE,FALSE,FALSE,FALSE,TRUE)
+  lowerCI<-c(NA,as.numeric(c(Vhispanic[1],Vblack[1],Vwhite[1],Vasian[1],Vall[1])))
+  upperCI<-c(NA,as.numeric(c(Vhispanic[3],Vblack[3],Vwhite[3],Vasian[3],Vall[3])))
+  
+  ## Define how the plot is to look.
+  
+  # Define the colours for the forest plot boxes, lines, and summary prisms.
+  boxColour='black' #"#008080"
+  lineColour='black' #"#008080"
+  summaryColour='black' #"#008080"
+  
+  # Define the size of the plot boxes.
+  boxsize=0.2
+  
+  # Define the dimensions of the plot.
+  plotWidth=900
+  plotHeight=500
+  
+  # Define the upper and lower bounds of the x-axis.
+  lowerBound=floor(min(lowerCI[2:6])*100)/100
+  upperBound=ceiling(max(upperCI[2:6])*100)/100
+  
+  # Define the x-axis tick marks: the lower bound, upper bound, and interval
+  lowerTicks=floor(min(lowerCI[2:6])*100)/100
+  upperTicks=ceiling(max(upperCI[2:6])*100)/100
+  ticksInterval=0.02
+  ticksSize=1.3
+  
+  # Define the x-axis label and text size.
+  xlab= theMetric
+  xlabSize=1.3
+  
+  # Define what paper details to include in addition to the source.
+  include_year=FALSE
+  include_numberInSample=TRUE
+  include_value=TRUE
+  
+  ##Create data for plot.
+  tableText<-c(source)
+  
+  if (include_year==TRUE){
+    tableText<-cbind(tableText,year)
+  }
+  if (include_numberInSample==TRUE){
+    tableText<-cbind(tableText,numberInSample)
+  }
+  
+  if (include_value==TRUE){
+    tableText<-cbind(tableText,c(paste(theMetric,"(95% CI)"),paste(value[2:6], " (",lowerCI[2:6],", ",upperCI[2:6],")", sep="")))
+  }
+  
+  tableData<-structure(list(value,lowerCI,upperCI),class="data.frame")
+  
+  ##Plot the forest plot
+  xClip=c(lowerBound,upperBound)
+  own<-fpTxtGp(gpar(cex=1.3))
+  own$ticks$cex<-ticksSize
+  own$xlab$cex<-xlabSize
+  
+  if(doPNG){png(paste0("ForestPlot_output_",theData,"_",theMetric,"_",tag,".png"),width=plotWidth, height=plotHeight,unit="px")}
+  
+  this <- getOption("OutDec")
+  forestplot(tableText,
+             mean=value,
+             lower=lowerCI,
+             upper=upperCI,
+             title=paste(theMetric, "for", theScore, "in each ethnic group \nin the", theData, "data"),
+             is.summary=isSummary,
+             grid=1,
+             col=fpColors(box=boxColour,line=lineColour,summary=summaryColour),
+             zero=NA,
+             txt_gp=own,
+             clip=xClip,
+             xlab=xlab,
+             xticks = seq(from=lowerTicks, to = upperTicks, by = ticksInterval),
+             hrzl_lines=TRUE,
+             vertices=TRUE,
+             boxsize=boxsize,
+             graphwidth = "auto"
+  )
+  options(OutDec="\xB7")
+  
+  if(doPNG){dev.off()}
+}
+```
+
+
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE, fig.height = figHeight2, fig.width = figWidth2}
+
+logisticPlot <- function(binWidth = 1, database="MIMIC-III", scoreType="SOFA", ethList=c("White","Black","Hispanic","Asian"), colours=c("All"='black',"Hispanic"='red', "Black"='blue', "White"='seagreen4', "Asian"='orange'), ethNames = c(hisp = "Hispanic", black = "Black", white = "White", asian = "Asian"), mode = 'logistic'){
+  
+  if(database == "eICU"){
+    db <- eICU_Dat
+    ethnicGroup <- eICU_Dat$ethnicity
+    deathField <- "DiedHosp"
+    if(scoreType == "SOFA"){
+      theScore <- eICU_Dat$SOFA1
+    }else{
+      theScore <- eICU_Dat$apachescore
+    }
+  }else{
+    db <- icustays
+    ethnicGroup <- icustays$ETHNICITY2
+    deathField <- "DiedHosp"
+    if(scoreType == "SOFA"){
+      theScore <- icustays$SOFA_Adm
+    }else{
+      theScore <- icustays$OASIS
+    }
+  }
+  
+  db$scoreBin <- theScore %/% binWidth
+  
+  # Set up a table of weights for the fitting.
+  scoreMax <- max(db$scoreBin)
+  weightsList <- data.frame(matrix(rep(0, scoreMax+1*6), nrow = scoreMax+1, ncol = 6))
+  weightsList[,1] <- 0:scoreMax
+  colnames(weightsList) <- c("score","ALL",ethList)
+  theseWeights <- table(db$scoreBin)
+  theseWeights <- data.frame(cbind(as.integer(rownames(theseWeights)), as.integer(theseWeights)))
+  labels <- match(weightsList$score, theseWeights[,1])
+  weightsList[,2] <- theseWeights[match(weightsList$score, theseWeights[,1]),2]
+  weightsList[is.na(weightsList[,2]),] <- 0
+  
+  for(eth in ethList){
+    theseWeights <- table(db[ethnicGroup == eth,]$scoreBin)
+    theseWeights <- data.frame(cbind(as.integer(rownames(theseWeights)), as.integer(theseWeights)))
+    weightsList[,eth] <- theseWeights[match(weightsList$score, theseWeights[,1]),2]
+    weightsList[is.na(weightsList[,eth]),eth] <- 0
+  }
+  
+  deathByScore_T <- aggregate(db[, deathField], list(db$scoreBin), mean)
+  deathByScore <- data.frame(matrix(nrow = scoreMax+1, ncol = 2))
+  colnames(deathByScore) <- c("score","All")
+  deathByScore$score <- 0:scoreMax
+  deathByScore[,2] <- deathByScore_T[match(deathByScore$score, deathByScore_T[,1]),2]
+  for(eth in ethList){
+    deathByScore_T <- aggregate(db[ethnicGroup == eth, deathField], list(db[ethnicGroup == eth, ]$scoreBin), mean)
+    deathByScore[,eth] <- cbind(deathByScore, rep(NA, scoreMax+1))
+    deathByScore[,eth] <- deathByScore_T[match(deathByScore$score, deathByScore_T[,1]),2]
+  }
+  
+  if(mode == 'logistic'){
+    fitted <- predict(glm(deathByScore$All ~ deathByScore$score, family = 'binomial', weights = weightsList$ALL), data.frame(score = 0:scoreMax), 
+                      type = "response", se.fit = TRUE)
+    lineData <- fitted$fit
+    
+    SOFAmort <- NA
+    if(database == "eICU"){
+      if(scoreType == "SOFA"){
+        SOFAmort <- fitted$fit[eICU_Dat$SOFA1+1]
+        write.csv(SOFAmort, "SOFAmort_eICU.csv")
+      }else{
+        
+      }
+    }else{
+      if(scoreType == "SOFA"){
+        SOFAmort <- fitted$fit[icustays$SOFA_Adm+1]
+        write.csv(SOFAmort, "SOFAmort_MIMIC.csv")
+      }else{
+        
+      }
+    }
+  }else{
+    deathByScore$All[is.na(deathByScore$All)] <- 0
+    lineData <- biviso(y=as.matrix(cbind(deathByScore$All,deathByScore$score)))[,1]
+  }
+  plot(y=lineData, x=0:scoreMax, type = 'l', col=colours["All"], lwd=2, main=paste0("Plot of ", mode," curve fitted to \nobserved mortality by ", scoreType, " score in ", database), xlab = paste(scoreType, "score"), ylab = "Mortality rate" , cex.main = 1 )
+  if(mode == 'logistic'){
+    polygon(c(0:scoreMax, scoreMax:0), c(fitted$fit-1.96*fitted$se.fit, rev(fitted$fit+1.96*fitted$se.fit)),   col = adjustcolor(colours["All"], alpha=0.05), border = NA)
+  }
+  if(mode == 'logistic'){
+    fitted <- predict(glm(as.matrix(deathByScore[ethNames["white"]]) ~ deathByScore$score, family = 'binomial', weights = as.matrix(weightsList[,ethNames["white"]])), data.frame(score = 0:scoreMax), type = "response", se.fit = TRUE)
+    lineData <- fitted$fit
+  }else{
+    deathByScore[,ethNames["white"]][is.na(deathByScore[,ethNames["white"]])] <- 0
+    lineData <- biviso(y=as.matrix(cbind(deathByScore[,ethNames["white"]],deathByScore$score)))[,1]
+  }
+  lines(y=deathByScore[,ethNames["white"]], x = 0:scoreMax, col=colours["White"], type = 'p', pch = 20, cex = 0.75)
+  lines(y=lineData, x=0:scoreMax, type = 'l', col=colours["White"] , lwd=2)
+  if(mode == 'logistic'){
+    polygon(c(0:scoreMax, scoreMax:0), c(fitted$fit-1.96*fitted$se.fit, rev(fitted$fit+1.96*fitted$se.fit)),   col = adjustcolor(colours["White"], alpha=0.2), border = NA)
+  }
+  if(mode == 'logistic'){
+    fitted <- predict(glm(as.matrix(deathByScore[ethNames["asian"]]) ~ deathByScore$score, family = 'binomial', weights = as.matrix(weightsList[ethNames["asian"]])), data.frame(score = 0:scoreMax), type = "response", se.fit = TRUE)  #
+    lineData <- fitted$fit
+  }else{
+    deathByScore[,ethNames["asian"]][is.na(deathByScore[,ethNames["asian"]])] <- 0
+    lineData <- biviso(y=as.matrix(cbind(deathByScore[,ethNames["asian"]],deathByScore$score)))[,1]
+  }
+  lines(y=deathByScore[,ethNames["asian"]], x = 0:scoreMax, col=colours["Asian"], type = 'p', pch = 20, cex = 0.75)
+  lines(y=lineData, x=0:scoreMax, type = 'l', col=colours["Asian"] , lwd=2)
+  if(mode == 'logistic'){
+    polygon(c(0:scoreMax, scoreMax:0), c(fitted$fit-1.96*fitted$se.fit, rev(fitted$fit+1.96*fitted$se.fit)),   col = adjustcolor(colours["Asian"], alpha=0.2), border = NA)
+  }
+  if(mode == 'logistic'){
+    fitted <- predict(glm(as.matrix(deathByScore[ethNames["black"]]) ~ deathByScore$score, family = 'binomial', weights = as.matrix(weightsList[ethNames["black"]])), data.frame(score = 0:scoreMax), type = "response", se.fit = TRUE)
+    lineData <- fitted$fit
+  }else{
+    deathByScore[ethNames["black"]][is.na(deathByScore[ethNames["black"]])] <- 0
+    lineData <- biviso(y=as.matrix(cbind(deathByScore[ethNames["black"]],deathByScore$score)))[,1]
+  }
+  lines(y=deathByScore[,ethNames["black"]], x = 0:scoreMax, col=colours["Black"], type = 'p', pch = 20, cex = 0.75)
+  lines(y=lineData, x=0:scoreMax, type = 'l', col=colours["Black"], lwd=2)
+  if(mode == 'logistic'){
+    polygon(c(0:scoreMax, scoreMax:0), c(fitted$fit-1.96*fitted$se.fit, rev(fitted$fit+1.96*fitted$se.fit)),   col = adjustcolor(colours["Black"], alpha=0.2), border = NA)
+  }
+  if(mode == 'logistic'){
+    fitted <- predict(glm(as.matrix(deathByScore[ethNames["hisp"]]) ~ deathByScore$score, family = 'binomial', weights = as.matrix(weightsList[ethNames["hisp"]])), data.frame(score = 0:scoreMax), type = "response", se.fit = TRUE)
+    lineData <- fitted$fit
+  }else{
+    deathByScore[ethNames["hisp"]][is.na(deathByScore[ethNames["hisp"]])] <- 0
+    lineData <- biviso(y=as.matrix(cbind(deathByScore[ethNames["hisp"]],deathByScore$score)))[,1]
+  }
+  lines(y=deathByScore[,ethNames["hisp"]], x = 0:scoreMax, col=colours["Hispanic"], type = 'p', pch = 20, cex = 0.75)
+  lines(y=lineData, x=0:scoreMax, type = 'l', col=colours["Hispanic"], lwd =2 )
+  if(mode == 'logistic'){
+    polygon(c(0:scoreMax, scoreMax:0), c(fitted$fit-1.96*fitted$se.fit, rev(fitted$fit+1.96*fitted$se.fit)),   col = adjustcolor(colours["Hispanic"], alpha=0.2), border = NA)
+  }
+  legend("topleft", legend = c("All", "Hispanic", "Black", "White", "Asian" ), col = c('black', 'red', 'blue', 'seagreen4', 'orange'), pch = c(19, 19, 19, 19, 19), cex = 0.8 )
+  #dev.off()
+  
+}
+```
+
+
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning =FALSE}
+
+# Set the age range of interest.
+minAge <- 16
+maxAge <- 90
+
+# Set the list of ethnicity names. They are recorded differnently in the two databases
+ethnicitiesList <- c("White","Black","Hispanic","Asian")
+
+# These are the data files from physionet.org via the Google BigQuery platform.
+# The data files cannot be supplied with this code as it requires approved access to the MIMIC-III and eICU database.
+# SQL code was used to create and extract SOFA scores.
+# This is the 
+SOFA <- read.csv(file="bq-results-20200805-214538-n690szu0x80_SOFAscoresAdmission_DUMMY.csv", stringsAsFactors = FALSE)
+OASIS <- read.csv(file="bq-results-20200806-202359-anbq1d2oo30vOASIS_DUMMY.csv", stringsAsFactors = FALSE)
+patients <- read.csv(file="bq-results-20200806-225103-mcsk0rb8h76l_Patients_DUMMY.csv", stringsAsFactors = FALSE)
+admissions <- read.csv(file="bq-results-20200806-231458-u3iow35qz30w_Admissions_DUMMY.csv", stringsAsFactors = FALSE)
+icustays <- read.csv(file = "bq-results-20200808-092553-ttzoex49foff_ICUSTAYS_DUMMY.csv")
+DoBgender <- read.csv("bq-results-20200806-082126-2pfodnem4miv_DOBgender_DUMMY.csv")
+ethnicitiesM <- read.csv("bq-results-20200806-081503-l2nmx172wnn4_SubjectsEthnicities_DUMMY.csv")
+
+admissions$DiedHosp <- !(admissions$DEATHTIME == "")
+
+patients$ETHNICITY <- ethnicitiesM$ETHNICITY[match(patients$SUBJECT_ID, ethnicitiesM$SUBJECT_ID)]
+patients <- patients[,c("SUBJECT_ID","GENDER","DOB","ETHNICITY")]
+
+MIMICnos <- list()
+MIMICnos$Total <- nrow(icustays)
+
+icustays$INTIME <- as.Date(icustays$INTIME)
+icustays$DOB <- patients$DOB[match(icustays$SUBJECT_ID, patients$SUBJECT_ID)]
+icustays$DOB <- as.Date(icustays$DOB)
+icustays$AGE <- (as.Date(icustays$INTIME) - as.Date(icustays$DOB))/365.25
+#icustays$AGE <- as.Date(icustays$INTIME) - as.Date(icustays$DOB)
+icustays$OASIS <- OASIS$oasis[match(icustays$ICUSTAY_ID,OASIS$icustay_id)]
+icustays$OASISprob <- OASIS$oasis_PROB[match(icustays$ICUSTAY_ID,OASIS$icustay_id)]
+icustays[,c("GENDER","DOB","ETHNICITY")] <- patients[match(icustays$SUBJECT_ID,patients$SUBJECT_ID),c("GENDER","DOB","ETHNICITY")]
+icustays$SOFA_Adm <- SOFA$SOFA[match(icustays$ICUSTAY_ID,SOFA$icustay_id)]
+icustays$DiedHosp <- admissions$DiedHosp[match(icustays$HADM_ID, admissions$HADM_ID)]
+icustays$INTIME <- as.Date(icustays$INTIME)
+
+MIMICnos$originalCheck <- nrow(icustays)
+
+# Drop any under the minimum age or over the maximum age.
+MIMICnos$agedMin <- nrow(icustays[icustays$AGE <= minAge,])
+MIMICnos$agedMax <- nrow(icustays[icustays$AGE >= maxAge,])
+MIMICnos$ageOut <- MIMICnos$agedMin + MIMICnos$agedMax
+icustays <- icustays[icustays$AGE >= minAge & icustays$AGE <= maxAge,]
+
+MIMICnos$exAges <- nrow(icustays)
+MIMICnos$episodeNos <- nrow(ethnicitiesM)
+MIMICnos$ethMissUnable <- nrow(ethnicitiesM[ethnicitiesM$ETHNICITY == "UNABLE TO OBTAIN",])
+MIMICnos$ethMissUnknown <- nrow(ethnicitiesM[ethnicitiesM$ETHNICITY == "PATIENT DECLINED TO ANSWER",])
+MIMICnos$ethMissDeclined <- nrow(ethnicitiesM[ethnicitiesM$ETHNICITY == "UNKNOWN/NOT SPECIFIED",])
+MIMICnos$NatAm <- nrow(icustays[grepl("INDIAN", icustays$ETHNICITY),])
+MIMICnos$ethMissing <- MIMICnos$ethMissDeclined + MIMICnos$ethMissUnable + MIMICnos$ethMissUnknown + MIMICnos$NatAm
+MIMICnos$missPredMort <- nrow(icustays[is.na(icustays$OASISprob) | icustays$OASISprob == "",])
+
+MIMICnos$Miss_percent <- MIMICnos$ethMissing/nrow(ethnicitiesM)*100
+
+```
+
+# MIMIC-III
+## Data cleaning
+There was a total of `r MIMICnos$Total` ICU episodes in the database.  
+There were `r MIMICnos$agedMin` episodes aged under `r minAge` who were excluded (`r round(MIMICnos$agedMin/MIMICnos$Total*100,1)`%). 
+There were `r MIMICnos$agedMax` episodes  (`r round(MIMICnos$agedMax/MIMICnos$Total*100,1)`%) with an incorrect date of birth who were excluded as the OASIS score uses age as a rating factor.
+
+Of the `r MIMICnos$episodeNos` admissions included after removing those under `r minAge` or over `r maxAge`:  
+  `r MIMICnos$ethMissing` did not have a recording of their ethnicity (`r round(MIMICnos$Miss_percent,1)`%);  
+`r MIMICnos$missPredMort` had no valid predicted mortality (`r round(MIMICnos$missPredMort/MIMICnos$episodeNos*100,1)`%).
+
+Next we reclassify the various ethnic groups according to the broader categories that we are interested in: "White", "Black", "Asian", and "Hispanic".
+We then drop ambiguous ethnic groups such as "Portugese", "South American" and "MULTI RACE ETHNICITY", and the "Native American" as there are inadequate numbers. 
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+
+ethnicitiesM$ETHNICITY2 <- NA
+for(eth in ethnicitiesList){
+  ethnicitiesM[grepl(eth,ethnicitiesM$ETHNICITY),"ETHNICITY2"] <- eth
+}
+MIMICnos$notKeyEthnicity <- nrow(ethnicitiesM[is.na(ethnicitiesM$ETHNICITY2),])
+
+icustays$ETHNICITY2 <- NA
+for(eth in ethnicitiesList){
+  icustays[grepl(toupper(eth),icustays$ETHNICITY),"ETHNICITY2"] <- eth
+}
+MIMICnos$ethOutScope <- nrow(icustays[is.na(icustays$ETHNICITY2),])
+icustays <- icustays[icustays$ETHNICITY2 %in% ethnicitiesList,]
+
+MIMICnos$incEthnicity1 <- nrow(icustays)
+
+outTable <- rbind(data.frame(table(icustays$ETHNICITY2)), sum(table(icustays$ETHNICITY2)))
+outTable[,1] <- c(rev(ethnicitiesList), "ALL")
+
+knitr::kable(outTable, align=c('r','c'), caption="Numbers of episodes by ethnic group (MIMIC-III).")
+
+```
+
+`r MIMICnos$NatAm` (`r round(MIMICnos$NatAm/MIMICnos$Total*100,1)`%) were Native American.
+
+Altogether, there were `r MIMICnos$ethOutScope` admissions that were not identified as being in the target group of 4 ethnicities (`r round(MIMICnos$ethOutScope/MIMICnos$Total,3)*100`%).
+
+
+Of these, `r MIMICnos$ethMissing` (`r round(MIMICnos$ethMissing/MIMICnos$Total,3)*100`%) had no recorded ethnicity at all.
+
+\pagebreak
+# Baseline characteristics
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+
+baseTable1 <- data.frame(matrix(ncol=7, nrow=(length(ethnicitiesList)+1)))
+rownames(baseTable1) <- c(ethnicitiesList, "All included")
+for(eth in ethnicitiesList){
+  icustaysX <- icustays[icustays$ETHNICITY2 == eth,]
+  icustaysX$GENDER[icustaysX$GENDER=="M"] <- 0
+  icustaysX$GENDER[icustaysX$GENDER=="F"] <- 1
+  icustaysX$DiedHosp[icustaysX$DiedHosp == "FALSE"] <- 0
+  icustaysX$DiedHosp[icustaysX$DiedHosp == "TRUE"] <- 1
+  NewRow <- as.matrix(t(c(nrow(icustaysX), round(mean(as.numeric(icustaysX$AGE), na.rm=TRUE),1), paste(round(quantile(icustaysX$AGE, 0.25, na.rm=TRUE)[[1]],1), "-",round(quantile(icustaysX$AGE, 0.75, na.rm=TRUE)[[1]]),1), round(mean(as.numeric(icustaysX$GENDER), na.rm=TRUE),2), median(icustaysX$OASIS, na.rm=TRUE), paste(quantile(icustaysX$OASIS, 0.25)[[1]], "-",quantile(icustaysX$OASIS, 0.75)[[1]]), round(mean(icustaysX$OASISprob, na.rm=TRUE),4))))
+  baseTable1[rownames(baseTable1) == eth,] <- NewRow
+}
+colnames(baseTable1) <- c("Num", "median age","IQR age", "proportion female","median OASIS score", "IQR OASIS score", "mean predicted hospital mortality")
+
+# Now add all the included ethnicities together.
+icustaysX <- icustays[icustays$ETHNICITY2 %in% ethnicitiesList,]
+MIMICnos$incEthnicity2 <- nrow(icustaysX)
+icustaysX$GENDER[icustaysX$GENDER=="M"] <- 0
+icustaysX$GENDER[icustaysX$GENDER=="F"] <- 1
+icustaysX$DiedHosp[icustaysX$DiedHosp == "FALSE"] <- 0
+icustaysX$DiedHosp[icustaysX$DiedHosp == "TRUE"] <- 1
+NewRow <- as.matrix(t(c(nrow(icustaysX), round(median(as.numeric(icustaysX$AGE), na.rm=TRUE),1), paste(round(quantile(icustaysX$AGE, 0.25, na.rm=TRUE)[[1]],1), "-",round(quantile(icustaysX$AGE, 0.75, na.rm=TRUE)[[1]],1)), round(mean(as.numeric(icustaysX$GENDER), na.rm=TRUE),2), median(icustaysX$OASIS, na.rm=TRUE), paste(quantile(icustaysX$OASIS, 0.25)[[1]], "-",quantile(icustaysX$OASIS, 0.75)[[1]]), round(mean(icustaysX$OASISprob, na.rm=TRUE),4))))
+baseTable1[rownames(baseTable1) == "All included",] <- NewRow
+
+
+
+baseTable2 <- data.frame(matrix(ncol=4, nrow=(length(ethnicitiesList)+1)))
+ethnicities <- c("White","Black","Hispanic","Asian","NATIVE AMERICAN")
+rownames(baseTable2) <- c(ethnicitiesList, "All included")
+for(eth in ethnicities){
+  icustaysX <- icustays[icustays$ETHNICITY2 == eth & icustays$AGE >= minAge,]
+  icustaysX$GENDER[icustaysX$GENDER=="M"] <- 0
+  icustaysX$GENDER[icustaysX$GENDER=="F"] <- 1
+  icustaysX$DiedHosp[icustaysX$DiedHosp == "FALSE"] <- 0
+  icustaysX$DiedHosp[icustaysX$DiedHosp == "TRUE"] <- 1
+  NewRow <- as.matrix(t(c(round(sd(icustaysX$OASISprob, na.rm=TRUE),4), round(mean(icustaysX$DiedHosp, na.rm=TRUE),3), round(median(icustaysX$LOS, na.rm = TRUE),1), paste(round(quantile(icustaysX$LOS, 0.25, na.rm=TRUE)[[1]],1), "-",round(quantile(icustaysX$LOS, 0.75, na.rm=TRUE[[1]]),1)))))
+  baseTable2[rownames(baseTable2) == eth,] <- NewRow
+}
+colnames(baseTable2) <- c("sd predicted hospital mortality", "hospital mortality","median length of stay", "IQR for LoS")
+
+# Now add all the included ethnicities together.
+icustaysX <- icustays[icustays$ETHNICITY2 %in% ethnicitiesList,]
+MIMICnos$incEthnicity2 <- nrow(icustaysX)
+icustaysX$GENDER[icustaysX$GENDER=="M"] <- 0
+icustaysX$GENDER[icustaysX$GENDER=="F"] <- 1
+icustaysX$DiedHosp[icustaysX$DiedHosp == "FALSE"] <- 0
+icustaysX$DiedHosp[icustaysX$DiedHosp == "TRUE"] <- 1
+NewRow <- as.matrix(t(c(round(sd(icustays$OASISprob, na.rm=TRUE),4), round(mean(icustays$DiedHosp, na.rm=TRUE),3), round(median(icustays$LOS, na.rm = TRUE),1), paste(round(quantile(icustays$LOS, 0.25, na.rm=TRUE)[[1]],1), "-",round(quantile(icustays$LOS, 0.75, na.rm=TRUE[[1]]),1)))))
+baseTable2[rownames(baseTable1) == "All included",] <- NewRow
+
+knitr::kable(baseTable1, format.args = c(width=70), caption = "Baseline patient characteristics in MIMIC-III.")
+
+```
+
+
+\
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+knitr::kable(baseTable2, format.args = c(width=70), caption = "Baseline patient characteristics in MIMIC-III cont'd.")
+
+```
+
+\pagebreak
+
+# Output linear models of ethnicity as a predictor of each of the baseline characteristics to see if the vary signifiacntl by ethnicity.
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+
+
+pAgeX <- lm(as.numeric(icustays$AGE) ~ icustays$ETHNICITY2)
+summary(pAgeX)
+icustays$GENDER2 <- 0
+icustays$GENDER2[icustays$GENDER == "F"] <- 1
+pGender <- lm(icustays$GENDER2 ~ icustays$ETHNICITY2)
+summary(pGender)
+```
+
+\pagebreak
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+pOasis <- lm(icustays$OASIS ~ icustays$ETHNICITY2)
+summary(pOasis)
+
+pPredMort <- lm(icustays$OASISprob ~ icustays$ETHNICITY2)
+summary(pPredMort)
+```
+
+\pagebreak
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+pHospMort <- lm(icustays$DiedHosp ~ icustays$ETHNICITY2)
+summary(pHospMort)
+pLoS <- lm(icustays$LOS ~ icustays$ETHNICITY2)
+summary(pLoS)
+```
+
+\pagebreak
+# Calibration plots
+The total number of episodes included in the analysis is `r nrow(icustays)`.
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, fig.width=figWidth2, fig.height=figHeight2}
+diedProp <- aggregate(icustays$DiedHosp, list(icustays$ETHNICITY2),mean)
+
+icustays$OAISISdecile <- ntile(as.numeric(icustays$OASISprob), 10)
+
+deathByOasisDecile <- aggregate(icustays$DiedHosp, list(icustays$OAISISdecile), mean)
+OasisPbyOasisDecile <- aggregate(icustays$OASISprob, list(icustays$OAISISdecile), mean)
+plot(deathByOasisDecile[,2], OasisPbyOasisDecile[,2], main="This is a plot of the proportion of deaths in each \ndecile of Oasis predicted mortality (MIMIC-III).", xlab="Oasis predicted mortality", ylab = "Actual mortality", cex.main=0.9)
+OASISprobCor <- cor(deathByOasisDecile[,2], OasisPbyOasisDecile[,2])
+```
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+
+#par(bg='white', lwd=2, col = 'black')
+calibrate.plot_2(icustays$DiedHosp, icustays$OASISprob, line.par = list(col='black'), shade.col = adjustcolor('gray', alpha = 0.1), main="Calibration plots for OASIS in MIMIC-III")
+calibrate.plot_2(icustays[icustays$ETHNICITY2 == "White",]$DiedHosp, icustays[icustays$ETHNICITY2 == "White",]$OASISprob, replace = FALSE, line.par = list(lwd=2, col='seagreen4'), shade.col = adjustcolor('seagreen4', alpha = 0.1))
+calibrate.plot_2(icustays[icustays$ETHNICITY2 == "Asian",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Asian",]$OASISprob, replace = FALSE, line.par = list(lwd=2, col='orange'), shade.col = adjustcolor('orange', alpha = 0.1))
+calibrate.plot_2(icustays[icustays$ETHNICITY2 == "Black",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Black",]$OASISprob, replace = FALSE, line.par = list(lwd=2, col='blue'), shade.col = adjustcolor('blue', alpha = 0.1))
+calibrate.plot_2(icustays[icustays$ETHNICITY2 == "Hispanic",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Hispanic",]$OASISprob, replace = FALSE, line.par = list(lwd=2, col='red'), shade.col = adjustcolor('red', alpha = 0.1))
+legend('topleft',legend=c("All","Hispanic","Black","White","Asian"), lwd=c(2,2,2,2,2), col=c('black','red','blue','seagreen4','orange'))
+
+```
+
+
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+# MIMIC Oasis
+SMRall_MIMIC_Oa <- SMR(as.numeric(icustays$DiedHosp), icustays$OASISprob)
+SMRall_MIMIC_Oa <- c(SMRall_MIMIC_Oa[5], SMRall_MIMIC_Oa[4], SMRall_MIMIC_Oa[6])
+SMRasian_MIMIC_Oa <- SMR(as.numeric(icustays[icustays$ETHNICITY2 == "Asian",]$DiedHosp), icustays[icustays$ETHNICITY2 == "Asian",]$OASISprob)
+SMRasian_MIMIC_Oa <- c(SMRasian_MIMIC_Oa[5], SMRasian_MIMIC_Oa[4], SMRasian_MIMIC_Oa[6])
+SMRblack_MIMIC_Oa <- SMR(as.numeric(icustays[icustays$ETHNICITY2 == "Black",]$DiedHosp), icustays[icustays$ETHNICITY2 == "Black",]$OASISprob)
+SMRblack_MIMIC_Oa <- c(SMRblack_MIMIC_Oa[5], SMRblack_MIMIC_Oa[4], SMRblack_MIMIC_Oa[6])
+SMRhispanic_MIMIC_Oa <- SMR(as.numeric(icustays[icustays$ETHNICITY2 == "Hispanic",]$DiedHosp), icustays[icustays$ETHNICITY2 == "Hispanic",]$OASISprob)
+SMRhispanic_MIMIC_Oa <- c(SMRhispanic_MIMIC_Oa[5], SMRhispanic_MIMIC_Oa[4], SMRhispanic_MIMIC_Oa[6])
+SMRwhite_MIMIC_Oa <- SMR(as.numeric(icustays[icustays$ETHNICITY2 == "White",]$DiedHosp), icustays[icustays$ETHNICITY2 == "White",]$OASISprob)
+SMRwhite_MIMIC_Oa <- c(SMRwhite_MIMIC_Oa[5], SMRwhite_MIMIC_Oa[4], SMRwhite_MIMIC_Oa[6])
+
+```
+
+# Recalibration of mortality estimates to OASIS scores.
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE, fig.width=figWidth2, fig.height=figHeight2}
+plotColours <- c("All"='black',"Hispanic"='red', "Black"='blue', "White"='seagreen4', "Asian"='orange')
+logisticPlot(binWidth = 1, database = "MIMIC-III", scoreType = "Oasis", ethnicitiesList, colours=plotColours, ethNames = c(hisp = "Hispanic", black = "Black", white = "White", asian = "Asian"), 'logistic')    # modes: 'logistic' or 'isotonic regression'.
+```
+
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, include=FALSE, warning = FALSE}
+# Calculate the ROCs for Oasis
+library(ROCR)
+thePredictionsAll_M <-  icustays$OASISprob
+thePredictionsAsian_M <- icustays[icustays$ETHNICITY2 == "Asian",]$OASISprob
+thePredictionsBlack_M <- icustays[icustays$ETHNICITY2 == "Black",]$OASISprob
+thePredictionsHispanic_M <- icustays[icustays$ETHNICITY2 == "Hispanic",]$OASISprob
+thePredictionsWhite_M <- icustays[icustays$ETHNICITY2 == "White",]$OASISprob
+
+theLabelsAll_M <- icustays$DiedHosp
+theLabelsAsian_M <- icustays[icustays$ETHNICITY2 == "Asian",]$DiedHosp
+theLabelsBlack_M <- icustays[icustays$ETHNICITY2 == "Black",]$DiedHosp
+theLabelsHispanic_M <- icustays[icustays$ETHNICITY2 == "Hispanic",]$DiedHosp
+theLabelsWhite_M <- icustays[icustays$ETHNICITY2 == "White",]$DiedHosp
+
+predObjAll_M <- prediction(predictions = thePredictionsAll_M, labels = theLabelsAll_M)
+aucAll_M <- round(performance(predObjAll_M, measure = "auc")@y.values[[1]],3)
+perfObjAll_M <- performance(predObjAll_M, "tpr","fpr")
+predObjAsian_M <- prediction(predictions = thePredictionsAsian_M, labels = theLabelsAsian_M)
+aucAsian_M <- round(performance(predObjAsian_M, measure = "auc")@y.values[[1]],3)
+perfObjAsian_M <- performance(predObjAsian_M, "tpr","fpr")
+predObjBlack_M <- prediction(predictions = thePredictionsBlack_M, labels = theLabelsBlack_M)
+aucBlack_M <- round(performance(predObjBlack_M, measure = "auc")@y.values[[1]],3)
+perfObjBlack_M <- performance(predObjBlack_M, "tpr","fpr")
+predObjHispanic_M <- prediction(predictions = thePredictionsHispanic_M, labels = theLabelsHispanic_M)
+aucHispanic_M <- round(performance(predObjHispanic_M, measure = "auc")@y.values[[1]],3)
+perfObjHispanic_M <- performance(predObjHispanic_M, "tpr","fpr")
+predObjWhite_M <- prediction(predictions = thePredictionsWhite_M, labels = theLabelsWhite_M)
+aucWhite_M <- round(performance(predObjWhite_M, measure = "auc")@y.values[[1]],3)
+perfObjWhite_M <- performance(predObjWhite_M, "tpr","fpr")
+
+```
+
+# Discrimination of OASIS
+
+```{r eval = TRUE, echo = FALSE, warning = FALSE, message = FALSE, fig.width=figWidth2, fig.height=figHeight2}
+{
+  plot(perfObjAll_M, main = "ROC curves for the Oasis predicted hospital mortality \nin the MIMIC-III database by ethnicity.", lwd=3, cex.main=0.9)
+  plot(perfObjAsian_M, add = TRUE, col = 'orange', lwd=3)
+  plot(perfObjBlack_M, add = TRUE, col = 'blue', lwd=3)
+  plot(perfObjHispanic_M, add = TRUE, col = 'red', lwd=3)
+  plot(perfObjWhite_M, add = TRUE, col = 'seagreen4', lwd=3)
+  abline(0,1,col='black', lty=2)
+  op <- par(cex = 0.8)
+  legend('bottomright',legend = c(paste("All", aucAll_M),paste("Hispanic",aucHispanic_M),paste("Black", aucBlack_M),  paste("White",aucWhite_M),paste("Asian", aucAsian_M)), col=c("black","red","blue","seagreen4","orange"), lty = c(1,1,1,1,1), lwd=c(3,3,3,3,3))
+  
+}
+
+```
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+
+AUCall_Oasis <- round(ci.auc(icustays$DiedHosp, icustays$OASISprob),3)
+AUCasian_Oasis <- round(ci.auc(icustays[icustays$ETHNICITY2 == "Asian",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Asian",]$OASISprob),3)
+AUCblack_Oasis <- round(ci.auc(icustays[icustays$ETHNICITY2 == "Black",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Black",]$OASISprob),3)
+AUChispanic_Oasis <- round(ci.auc(icustays[icustays$ETHNICITY2 == "Hispanic",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Hispanic",]$OASISprob),3)
+AUCwhite_Oasis <- round(ci.auc(icustays[icustays$ETHNICITY2 == "White",]$DiedHosp, icustays[icustays$ETHNICITY2 == "White",]$OASISprob),3)
+
+```
+
+The corresponding AUCs (95% CI) are:  
+  all people - `r aucAll_M` (`r AUCall_Oasis`),   
+Hispanic - `r aucHispanic_M` (`r AUChispanic_Oasis`),  
+Black - `r aucBlack_M` (`r AUCblack_Oasis`),  
+White - `r aucWhite_M` (`r AUCwhite_Oasis`) and  
+Asian - `r aucAsian_M` (`r AUCasian_Oasis`)  
+
+\pagebreak
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+# Now test the difference between AUROCs.
+rWhite <- roc(response=icustays[icustays$ETHNICITY2 == "White",]$DiedHosp, predictor=icustays[icustays$ETHNICITY2 == "White",]$OASISprob)
+rNotWhite <- roc(response=icustays[!(icustays$ETHNICITY2 == "White"),]$DiedHosp, predictor=icustays[!(icustays$ETHNICITY2 == "White"),]$OASISprob)
+roc.test(rWhite, rNotWhite)
+
+rBlack <- roc(response=icustays[icustays$ETHNICITY2 == "Black",]$DiedHosp, predictor=icustays[icustays$ETHNICITY2 == "Black",]$OASISprob)
+rNotBlack <- roc(response=icustays[!(icustays$ETHNICITY2 == "Black"),]$DiedHosp, predictor=icustays[!(icustays$ETHNICITY2 == "Black"),]$OASISprob)
+roc.test(rBlack, rNotBlack)
+
+rAsian <- roc(response=icustays[icustays$ETHNICITY2 == "Asian",]$DiedHosp, predictor=icustays[icustays$ETHNICITY2 == "Asian",]$OASISprob)
+rNotAsian <- roc(response=icustays[!(icustays$ETHNICITY2 == "Asian"),]$DiedHosp, predictor=icustays[!(icustays$ETHNICITY2 == "Asian"),]$OASISprob)
+roc.test(rAsian, rNotAsian)
+
+rHispanic <- roc(response=icustays[icustays$ETHNICITY2 == "Hispanic",]$DiedHosp, predictor=icustays[icustays$ETHNICITY2 == "Hispanic",]$OASISprob)
+rNotHispanic <- roc(response=icustays[!(icustays$ETHNICITY2 == "Hispanic"),]$DiedHosp, predictor=icustays[!(icustays$ETHNICITY2 == "Hispanic"),]$OASISprob)
+roc.test(rHispanic, rNotHispanic)
+
+
+```
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, results='hide', fig.width = 12, fig.height=8}
+# Now calculate the AUCs for MIMIC-III
+sampleSizes_M <- c("n",  as.character(sum(icustays$ETHNICITY2 == "Hispanic")), as.character(sum(icustays$ETHNICITY2 == "Black")), as.character(sum(icustays$ETHNICITY2 == "White")),as.character(sum(icustays$ETHNICITY2 == "Asian")), as.character(nrow(icustays)))
+
+AUCall_Oasis <- round(ci.auc(icustays$DiedHosp, icustays$OASISprob),3)
+AUCasian_Oasis <- round(ci.auc(icustays[icustays$ETHNICITY2 == "Asian",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Asian",]$OASISprob),3)
+AUCblack_Oasis <- round(ci.auc(icustays[icustays$ETHNICITY2 == "Black",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Black",]$OASISprob),3)
+AUChispanic_Oasis <- round(ci.auc(icustays[icustays$ETHNICITY2 == "Hispanic",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Hispanic",]$OASISprob),3)
+AUCwhite_Oasis <- round(ci.auc(icustays[icustays$ETHNICITY2 == "White",]$DiedHosp, icustays[icustays$ETHNICITY2 == "White",]$OASISprob),3)
+
+plotForest("MIMIC-III",AUChispanic_Oasis, AUCblack_Oasis, AUCwhite_Oasis, AUCasian_Oasis, AUCall_Oasis, "Oasis", "AUC",doPNG=FALSE, sampleSizes_M, tag="Oasis")
+
+```
+
+
+```{r eval=TRUE, echo=FALSE, message = FALSE, warning = FALSE, results='hide', fig.width=12, fig.height=8}
+plotForest("MIMIC-III",round(SMRhispanic_MIMIC_Oa,3), round(SMRblack_MIMIC_Oa,3),  round(SMRwhite_MIMIC_Oa,3),round(SMRasian_MIMIC_Oa,3), round(SMRall_MIMIC_Oa,3), "Oasis score", "SMR",doPNG=FALSE, sampleSizes_M, tag="Oasis")
+
+# restore midline decimal point.
+#options(OutDec="\xB7")
+
+```
+
+
+# SOFA
+
+## Fitting a mortality curve to OASIS and SOFA scores in MIMIC-III.
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE, fig.width=figWidth2, fig.height=figHeight2}
+plotColours <- c("All"='black',"Hispanic"='red', "Black"='blue', "White"='seagreen4', "Asian"='orange')
+logisticPlot(binWidth = 1, database = "MIMIC-III", scoreType = "SOFA", ethnicitiesList, colours=plotColours, ethNames = c(hisp = "Hispanic", black = "Black", white = "White", asian = "Asian"), 'logistic')
+
+SOFAmort <- read.csv("SOFAmort_MIMIC.csv")
+icustays$SOFAmort <- SOFAmort[,2]
+#----------------------------------------- eICU calibration plot -----------------
+
+
+#par(bg='white', lwd=2, col = 'black')
+calibrate.plot_2(icustays$DiedHosp, icustays$SOFAmort, line.par = list(col='black'), shade.col = adjustcolor('gray', alpha = 0.3), main="Calibration plots for SOFA scores \npredicted mortality in MIMIC")
+calibrate.plot_2(icustays[icustays$ETHNICITY2 == "White",]$DiedHosp, icustays[icustays$ETHNICITY2 == "White",]$SOFAmort, replace = FALSE, line.par = list(lwd=2, col='seagreen4'), shade.col = adjustcolor('seagreen4', alpha = 0.1))
+calibrate.plot_2(icustays[icustays$ETHNICITY2 == "Asian",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Asian",]$SOFAmort, replace = FALSE, line.par = list(lwd=2, col='orange'), shade.col = adjustcolor('orange', alpha = 0.1))
+calibrate.plot_2(icustays[icustays$ETHNICITY2 == "Black",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Black",]$SOFAmort, replace = FALSE, line.par = list(lwd=2, col='blue'), shade.col = adjustcolor('blue', alpha = 0.1))
+calibrate.plot_2(icustays[icustays$ETHNICITY2 == "Hispanic",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Hispanic",]$SOFAmort, replace = FALSE, line.par = list(lwd=2, col='red'), shade.col = adjustcolor('red', alpha = 0.1))
+legend('topleft',legend=c("All","Hispanic","Black","White","Asian"), lwd=c(2,2,2,2,2), col=c('black','red','blue','seagreen4','orange'))
+
+#---------------------------------------------------------------------------------
+
+
+```
+
+
+The correlation between the deciles of the Oasis predicted mortality and the observed mortality is very high (`r OASISprobCor`). This suggests that the variable 'oasis_PROB' in the 'oasis table of the mimiciii_derived database is, in fact the directly observed mortality rates by Oasis score.
+
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, fig.width=figWidth2, fig.height=figHeight2}
+
+deathByOasis_T <- aggregate(icustays[, "DiedHosp"], list(icustays$OASIS), mean)
+scoreMax <- max(icustays$OASIS)
+  deathByOasis <- data.frame(matrix(nrow = scoreMax+1, ncol = 2))
+  colnames(deathByOasis) <- c("score","All")
+  deathByOasis$score <- 0:scoreMax
+  deathByOasis[,2] <- deathByOasis_T[match(deathByOasis$score, deathByOasis_T[,1]),2]
+
+
+# Now make sure all possible scores accomodated 0:70
+oasisscores <- (min(icustays$OASIS):max(icustays$OASIS))
+deathByOasis2 <- data.frame(cbind(oasisscores, rep(0, length(oasisscores))))
+deathByOasis2[,2] <- deathByOasis[match(deathByOasis2[,1],deathByOasis[,1]),2]
+deathByOasis2[is.na(deathByOasis2[,2]),] <- 0
+
+#O2E_SOFA_MIMIC_All_logistic <- glm(DiedHosp)
+
+plot(x=oasisscores,y=deathByOasis2[,2], main="Plot of mortality by Oasis score in the \nMIMIC-III data", xlab="Oasis score", ylab="Mortality", cex.main=0.9)
+
+```
+
+Now we can examine the relationship of the admission SOFA scores to mortality.
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, fig.width=figWidth2, fig.height=figHeight2}
+SOFAscores <- min(icustays$SOFA_Adm):max(icustays$SOFA_Adm)
+deathBySOFA <- aggregate(icustays$DiedHosp, list(icustays$SOFA_Adm), mean)
+plot(SOFAscores, deathBySOFA[,2], main="Mortality by SOFA score in the\nMIMIC-III database.", xlab="SOFA score on admission",ylab="Mortality", cex.main=0.9)
+```
+
+\
+  
+ 
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, fig.width=figWidth2, fig.height=figHeight2}
+icustays$SOFAcategory <- 0
+icustays$SOFAcategory[icustays$SOFA_Adm < 2] <- 1
+icustays$SOFAcategory[icustays$SOFA_Adm %in% c(2,3)] <- 2
+icustays$SOFAcategory[icustays$SOFA_Adm %in% c(4,5)] <- 3
+icustays$SOFAcategory[icustays$SOFA_Adm %in% c(6,7)] <- 4
+icustays$SOFAcategory[icustays$SOFA_Adm %in% c(8,9)] <- 5
+icustays$SOFAcategory[icustays$SOFA_Adm %in% c(10,11)] <- 6
+icustays$SOFAcategory[icustays$SOFA_Adm %in% c(12,13)] <- 7
+icustays$SOFAcategory[icustays$SOFA_Adm >= 14] <- 8
+
+deathBySOFAcat <- aggregate(icustays$DiedHosp, list(icustays$SOFAcategory), mean)
+deathBySOFAcat_Asian <- aggregate(icustays[icustays$ETHNICITY2 == "Asian", "DiedHosp"], list(icustays[icustays$ETHNICITY2 == "Asian", "SOFAcategory"]), mean)
+deathBySOFAcat_Black <- aggregate(icustays[icustays$ETHNICITY2 == "Black", "DiedHosp"], list(icustays[icustays$ETHNICITY2 == "Black", "SOFAcategory"]), mean)
+deathBySOFAcat_White <- aggregate(icustays[icustays$ETHNICITY2 == "White", "DiedHosp"], list(icustays[icustays$ETHNICITY2 == "White", "SOFAcategory"]), mean)
+deathBySOFAcat_Hispanic <- aggregate(icustays[icustays$ETHNICITY2 == "Hispanic", "DiedHosp"], list(icustays[icustays$ETHNICITY2 == "Hispanic", "SOFAcategory"]), mean)
+plot(y=deathBySOFAcat[,2], x=1:8, main="Mortality by category of admission SOFA score (MIMIC-III).", xlab="Admission SOFA score",ylab="Mortality", cex.main=0.9)
+plot(y=deathBySOFAcat_Asian[,2], x=1:8, main="Mortality in Asian people by category of \nadmission SOFA score.", xlab="Admission SOFA score",ylab="Mortality", cex.main=0.9)
+plot(y=deathBySOFAcat_Black[,2], x=1:8, main="Mortality in Black people by category of \nadmission SOFA score (MIMIC-III).", xlab="Admission SOFA score",ylab="Mortality", cex.main=0.9)
+plot(y=deathBySOFAcat_White[,2], x=1:8, main="Mortality In white people by category of \nadmission SOFA score (MIMIC-III).", xlab="Admission SOFA score",ylab="Mortality", cex.main=0.9)
+plot(y=deathBySOFAcat_Hispanic[,2], x=1:8, main="Mortality Hispanic people by category of \nadmission SOFA score (MIMIC-III).", xlab="Admission SOFA score",ylab="Mortality", cex.main=0.9)
+
+
+```
+
+\pagebreak
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+options(OutDec = ".")
+deathBySOFAcatsA <- cbind(as.numeric(round(100*deathBySOFAcat[,2],1)), as.numeric(round(100*deathBySOFAcat_Asian[,2], 1)), as.numeric(round(100*deathBySOFAcat_Black[,2],1)), as.numeric(round(100*deathBySOFAcat_White[,2], 1)), as.numeric(round(100*deathBySOFAcat_Hispanic[,2], 1)))
+options(OutDec = ".")   # Needed to prevent errors generated by converting decimals with midline strings to characters in cbind.
+deathBySOFAcats <- cbind(c("0,1","2,3","4,5","6,7","8,9","10,11","12,13","14+"), as.matrix(deathBySOFAcatsA))
+colnames(deathBySOFAcats) <- c("SOFA category", "All", "Asian", "Black", "White", "Hispanic")
+
+SMRbySOFAcats <- data.frame(cbind(deathBySOFAcats[,1], matrix(round(as.numeric(deathBySOFAcats[,2:6])/as.numeric(deathBySOFAcats[,2]),2),8,5)))
+colnames(SMRbySOFAcats) <- c("SOFA category", "All", "Asian", "Black", "White", "Hispanic")
+options(OutDec="\xB7")  # Put back the midline dps.
+
+knitr::kable(deathBySOFAcats, col.names = c("SOFA category","All", "Asian", "Black", "White", "Hispanic"), format.args = c(width = 50), caption = "Mortality (%) by SOFA category and ethnic group (MIMIC-III).", align=rep('c', 6)) 
+```
+
+\pagebreak
+
+   
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+knitr::kable(SMRbySOFAcats, col.names = c("SOFA category","All", "Asian", "Black", "White", "Hispanic"), format.args = c(width = 50), caption = "SMR by SOFA category and ethnic group (MIMIC-III).", align=rep('c', 6)) 
+```
+
+\
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, fig.width=figWidth2, fig.height=figHeight2}
+options(OutDec = ".")
+
+icustays$SOFAcategory <- 0
+icustays$SOFAcategory[icustays$SOFA_Adm < 8] <- 1
+icustays$SOFAcategory[icustays$SOFA_Adm %in% 8:11] <- 2
+icustays$SOFAcategory[icustays$SOFA_Adm > 11] <- 3
+
+deathBySOFAcat <- aggregate(icustays$DiedHosp, list(icustays$SOFAcategory), mean)
+deathBySOFAcat_Asian <- aggregate(icustays[icustays$ETHNICITY2 == "Asian", "DiedHosp"], list(icustays[icustays$ETHNICITY2 == "Asian", "SOFAcategory"]), mean)
+deathBySOFAcat_Black <- aggregate(icustays[icustays$ETHNICITY2 == "Black", "DiedHosp"], list(icustays[icustays$ETHNICITY2 == "Black", "SOFAcategory"]), mean)
+deathBySOFAcat_White <- aggregate(icustays[icustays$ETHNICITY2 == "White", "DiedHosp"], list(icustays[icustays$ETHNICITY2 == "White", "SOFAcategory"]), mean)
+deathBySOFAcat_Hispanic <- aggregate(icustays[icustays$ETHNICITY2 == "Hispanic", "DiedHosp"], list(icustays[icustays$ETHNICITY2 == "Hispanic", "SOFAcategory"]), mean)
+
+theNumbers <- c(nrow(icustays[icustays$SOFAcategory == 1,]), 
+                nrow(icustays[icustays$SOFAcategory == 2,]), 
+                nrow(icustays[icustays$SOFAcategory == 3,])
+              )
+
+deathBySOFAcats2 <- cbind(c("0-7","8-11","11+"), theNumbers, round(100*deathBySOFAcat[,2],1), round(100*deathBySOFAcat_Hispanic[,2], 1), round(100*deathBySOFAcat_Black[,2],1), round(100*deathBySOFAcat_White[,2], 1), round(100*deathBySOFAcat_Asian[,2], 1))
+colnames(deathBySOFAcats2) <- c("SOFA category", "Num", "All", "Asian", "Black", "White", "Hispanic")
+
+SMRbySOFAcats2 <- data.frame( cbind( deathBySOFAcats2[,1], theNumbers, matrix( round( 
+  as.numeric( deathBySOFAcats2[,3:7]) / as.numeric(deathBySOFAcats2[,3]), 2), 3, 5)))
+colnames(SMRbySOFAcats2) <- c("SOFA category", "Num", "All", "Hispanic", "Black", "White", "Asian")
+
+options(OutDec = "\xB7")
+
+knitr::kable(deathBySOFAcats2, col.names = c("SOFA category","Nums","All",  "Hispanic", "Black", "White", "Asian"), format.args = c(width = 50), caption = "Mortality (%) by SOFA category and ethnic group (3 categories) (MIMIC-III).", align=rep('c', 7)) 
+
+```
+ 
+\
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+knitr::kable(SMRbySOFAcats2, col.names = c("SOFA category","Num", "All", "Hispanic", "Black", "White", "Asian"), format.args = c(width = 50), caption = "SMR by SOFA category and ethnic group (3 categories) (MIMIC-III).", align=rep('c', 6)) 
+
+```
+
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE, results='hide', fig.width=figWidth2, fig.height=figHeight2}
+# Now the ROC for SOFA scores in MIMIC-IIIU
+library(ROCR)
+thePredictionsAll_SM <- icustays$SOFA_Adm
+thePredictionsAsian_SM <- icustays[icustays$ETHNICITY2 == "Asian",]$SOFA_Adm
+thePredictionsBlack_SM <- icustays[icustays$ETHNICITY2 == "Black",]$SOFA_Adm
+thePredictionsHispanic_SM <- icustays[icustays$ETHNICITY2 == "Hispanic",]$SOFA_Adm
+thePredictionsWhite_SM <- icustays[icustays$ETHNICITY2 == "White",]$SOFA_Adm
+
+theLabelsAll_SM <- icustays$DiedHosp
+theLabelsAsian_SM <- icustays[icustays$ETHNICITY2 == "Asian",]$DiedHosp
+theLabelsBlack_SM <- icustays[icustays$ETHNICITY2 == "Black",]$DiedHosp
+theLabelsHispanic_SM <- icustays[icustays$ETHNICITY2 == "Hispanic",]$DiedHosp
+theLabelsWhite_SM <- icustays[icustays$ETHNICITY2 == "White",]$DiedHosp
+
+predObjAll_SM <- prediction(predictions = thePredictionsAll_SM, labels = theLabelsAll_SM)
+aucAll_SM <- round(performance(predObjAll_SM, measure = "auc")@y.values[[1]],3)
+perfObjAll_SM <- performance(predObjAll_SM, "tpr","fpr")
+predObjAsian_SM <- prediction(predictions = thePredictionsAsian_SM, labels = theLabelsAsian_SM)
+aucAsian_SM <- round(performance(predObjAsian_SM, measure = "auc")@y.values[[1]],3)
+perfObjAsian_SM <- performance(predObjAsian_SM, "tpr","fpr")
+predObjBlack_SM <- prediction(predictions = thePredictionsBlack_SM, labels = theLabelsBlack_SM)
+aucBlack_SM <- round(performance(predObjBlack_SM, measure = "auc")@y.values[[1]],3)
+perfObjBlack_SM <- performance(predObjBlack_SM, "tpr","fpr")
+predObjHispanic_SM <- prediction(predictions = thePredictionsHispanic_SM, labels = theLabelsHispanic_SM)
+aucHispanic_SM <- round(performance(predObjHispanic_SM, measure = "auc")@y.values[[1]],3)
+perfObjHispanic_SM <- performance(predObjHispanic_SM, "tpr","fpr")
+predObjWhite_SM <- prediction(predictions = thePredictionsWhite_SM, labels = theLabelsWhite_SM)
+aucWhite_SM <- round(performance(predObjWhite_SM, measure = "auc")@y.values[[1]],3)
+perfObjWhite_SM <- performance(predObjWhite_SM, "tpr","fpr")
+
+{
+  plot(perfObjAll_SM, main = "ROC curves for the SOFA scores in the MIMIC-III \ndatabase by ethnicity.", lwd=3, cex.main=0.9)
+  plot(perfObjAsian_SM, add = TRUE, col = 'orange', lwd=3)
+  plot(perfObjBlack_SM, add = TRUE, col = 'blue', lwd=3)
+  plot(perfObjHispanic_SM, add = TRUE, col = 'red', lwd=3)
+  plot(perfObjWhite_SM, add = TRUE, col = 'seagreen4', lwd=3)
+  abline(0,1,col='black', lty=2)
+  op <- par(cex = 0.8)
+  legend('bottomright',legend = c(paste("All", aucAll_SM),paste("Hispanic",aucHispanic_SM),paste("Black", aucBlack_SM),  paste("White",aucWhite_SM), paste("Asian", aucAsian_SM)), col=c("black","red","blue","seagreen4","orange"), lty = c(1,1,1,1,1), lwd=c(3,3,3,3,3))
+}
+
+```
+ 
+
+ 
+ 
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+LR_SOFA_MIMIC_Eth <- glm(DiedHosp ~ ETHNICITY2 + SOFA_Adm, data = icustays,family=binomial(link=logit))
+R2_SOFA_MIMIC_Eth <- rsq(LR_SOFA_MIMIC_Eth)
+
+knitr::kable(round(summary(LR_SOFA_MIMIC_Eth)$coefficients,3), format.args = c(width=70), caption = "Logistic regression of ethnicity and in-hospital death controlled for SOFA score (MIMIC-II).", align='c')
+
+```
+ 
+ 
+\pagebreak
+# eICU analysis
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+# Now or eICU data
+
+# This data is from the eICU database on www.physionet.org
+# This is the 'Patient' table.
+eICU_Pats <-  read.csv("bq-results-20200809-141932-y1zn72dtxh4e_EICU_PATIENT.csv")
+Pats_TotNo <- nrow(eICU_Pats)
+# This is the 'apachepatientresult' table.
+eICU_ApacheResFull <- read.csv("bq-results-20200809-142217-bcushyutuc8s_EICU_ApacheRes.csv")
+# This is a table of SOFA scores derived from the eICU database. See publication for details.
+eICU_SOFA <- read.csv("bq-results-20200810-120702-s3rw32q3hplb-eICU_SOFA.csv")
+
+
+# Only look at Apache IVa entries.
+notApache4 <- nrow(eICU_ApacheResFull[!eICU_ApacheResFull$apacheversion == "IVa",])
+eICU_ApacheResFull <- eICU_ApacheResFull[eICU_ApacheResFull$apacheversion == "IVa",] 
+
+# remember the original total of episodes.
+ApacheRes_N_Original <- nrow(eICU_ApacheResFull)
+
+# Fetch the ethnicity classifications and put them into the working table.
+eICU_ApacheResFull$ethnicity <- eICU_Pats$ethnicity[match(eICU_ApacheResFull$patientunitstayid, eICU_Pats$patientunitstayid)]
+eICU_ApacheResFull[eICU_ApacheResFull$ethnicity == "Caucasian",]$ethnicity <- "White"
+eICU_ApacheResFull[eICU_ApacheResFull$ethnicity == "African American",]$ethnicity <- "Black"
+
+# Count the episodes out of the age range.
+# Calculate in the age.
+eICU_ApacheResFull$age <- eICU_Pats$age[match(eICU_ApacheResFull$patientunitstayid, eICU_Pats$patientunitstayid)]
+
+# Copy in the gender
+eICU_ApacheResFull$gender <- eICU_Pats$gender[match(eICU_ApacheResFull$patientunitstayid, eICU_Pats$patientunitstayid)]
+
+# Count the episodes in ages out of scope
+eICU_under16 <- nrow(eICU_ApacheResFull[eICU_ApacheResFull$age %in% 0:15,])
+eICU_over90 <- nrow(eICU_ApacheResFull[eICU_ApacheResFull$age == "> 89",])
+# Count the missing age entries
+eicu_ageBlank <- nrow(eICU_ApacheResFull[(eICU_ApacheResFull$age == ""),])
+
+# Now drop the out of scope or missing ages.
+eICU_ApacheResFull <- eICU_ApacheResFull[!(eICU_ApacheResFull$age %in% 0:15),]
+eICU_ApacheResFull <- eICU_ApacheResFull[!(eICU_ApacheResFull$age == "> 89"),]
+eICU_ApacheResFull <- eICU_ApacheResFull[!(eICU_ApacheResFull$age == ""),]
+
+# Remember the number of episodes in our age range
+eICU_epNum <- nrow(eICU_ApacheResFull)
+
+# Do counts of dropped ethnicity entries.
+eICU_ethMiss1 <- nrow(eICU_ApacheResFull[eICU_ApacheResFull$ethnicity == "",])
+eICU_ethMiss2 <- nrow(eICU_ApacheResFull[is.na(eICU_ApacheResFull$ethnicity),])
+eICU_ethUnknown <- nrow(eICU_ApacheResFull[(eICU_ApacheResFull$ethnicity == "Other/Unknown"),])
+eICU_ethMiss <- eICU_ethMiss1 + eICU_ethMiss2 + eICU_ethUnknown
+eICU_NatAm <- nrow(eICU_ApacheResFull[eICU_ApacheResFull$ethnicity == "Native American",])
+eICU_ethDropped <- eICU_ethMiss + eICU_NatAm 
+
+# Count the episodes with missing Apache scores or Apache predicted mortalities.
+eICU_mortMiss <- nrow(eICU_ApacheResFull[!(eICU_ApacheResFull$predictedhospitalmortality >= 0), ])
+eICU_noScore <-  nrow(eICU_ApacheResFull[!(eICU_ApacheResFull$apachescore >= 0),])
+
+# Drop APache & Mort <0
+eICU_ApacheResFull <- eICU_ApacheResFull[(eICU_ApacheResFull$apachescore >= 0) & (eICU_ApacheResFull$predictedhospitalmortality >= 0), ]
+
+# Drop those admissions with no ethnicity recorded
+eICU_ApacheResFull <- eICU_ApacheResFull[!is.na(eICU_ApacheResFull$ethnicity),]   # Remove the NAs
+eICU_ApacheResFull <- eICU_ApacheResFull[!(eICU_ApacheResFull$ethnicity == ""),]  # Remove the missing
+eICU_ApacheResFull <- eICU_ApacheResFull[!(eICU_ApacheResFull$ethnicity == "Other/Unknown"),] # Remove the 'other/unknown'
+eICU_ApacheResFull <- eICU_ApacheResFull[!(eICU_ApacheResFull$ethnicity == "Native American"),] # Remove the Native Americans
+
+
+```
+
+\
+# Data cleaning
+We restricted our analysis to Apache IVa scores, and there were `r nrow(ApacheRes_N_Original)` entries altogether.
+After removing the ages out of scope there were `r eICU_epNum` episodes included.
+
+There were `r eICU_ethMiss1` episodes with no recorded ethnicity, making `r round(eICU_ethMiss1/eICU_epNum*100,1)`% of the total.
+
+There were `r eICU_ethMiss2` episodes with an ethnicity entry of 'NA', making `r round(eICU_ethMiss2/eICU_epNum*100,1)`% of the total. 
+
+There were `r eICU_ethUnknown` episodes with an ethnicity entry of 'other/unknown', making `r round(eICU_ethUnknown/eICU_epNum*100,1)`% of the total.
+
+There were `r eICU_NatAm` episodes in Native Americans who were also excluded, making `r round(eICU_NatAm/eICU_epNum*100,1)`% of the total.
+
+Altogether there were `r eICU_ethDropped` that were dropped on account of the ethnicity entries, making `r round(eICU_ethDropped/eICU_epNum*100,1)`% of the total.
+
+`r eICU_mortMiss` episodes were dropped as they did not have a valid predicted mortality (`r round(eICU_mortMiss/eICU_epNum*100, 1)`%). 
+
+`r eICU_noScore` episodes did not have an Apache score (`r round(eICU_noScore/eICU_epNum*100, 1)`%). 
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+
+eICU_Dat <- eICU_ApacheResFull     
+
+# Drop any that are not in our list of ethnicities.
+eICU_Dat <- eICU_Dat[(eICU_Dat$ethnicity %in% ethnicitiesList),]
+
+#######################
+eICU_Dat$DiedHosp <- FALSE
+eICU_Dat$DiedHosp <- eICU_ApacheResFull$actualhospitalmortality[match(eICU_Dat$patientunitstayid, eICU_ApacheResFull$patientunitstayid)]
+eICU_Dat$DiedHosp[eICU_Dat$DiedHosp == "ALIVE"] <- 0
+eICU_Dat$DiedHosp[eICU_Dat$DiedHosp == "EXPIRED"] <- 1
+eICU_Dat$DiedHosp <- as.numeric(eICU_Dat$DiedHosp)
+eICU_deathMiss <- nrow(eICU_Dat[is.na(eICU_Dat$DiedHosp),])
+eICU_Dat <- eICU_Dat[!is.na(eICU_Dat$DiedHosp),]
+# ICU
+eICU_Dat$DiedICU <- FALSE
+eICU_Dat$DiedICU <- eICU_ApacheResFull$actualicumortality[match(eICU_Dat$patientunitstayid, eICU_ApacheResFull$patientunitstayid)]
+eICU_Dat$DiedICU[eICU_Dat$DiedICU == "ALIVE"] <- 0
+eICU_Dat$DiedICU[eICU_Dat$DiedICU == "EXPIRED"] <- 1
+eICU_Dat$DiedICU <- as.numeric(eICU_Dat$DiedICU)
+eICU_Dat <- eICU_Dat[!is.na(eICU_Dat$DiedICU),]
+
+# Add the Apache IVa scores
+eICU_Dat$apache <- eICU_ApacheResFull$apachescore[match(eICU_Dat$patientunitstayid, eICU_ApacheResFull$patientunitstayid)]
+eICU_Dat$apacheMort <- eICU_ApacheResFull$predictedhospitalmortality[match(eICU_Dat$patientunitstayid, eICU_ApacheResFull$patientunitstayid)]
+# Drop the '-1' mortality rates
+missingApacheMort <- nrow(eICU_Dat[eICU_Dat$apacheMort == 0,])
+eICU_Dat <- eICU_Dat[eICU_Dat$apacheMort >= 0,]
+
+############
+eICU_SOFA1 <- eICU_SOFA[eICU_SOFA$day == 1,]
+eICU_Dat$SOFA1 <- eICU_SOFA1$sofa[match(eICU_Dat$patientunitstayid, eICU_SOFA1$patientunitstayid)]
+
+# Drop any rows with missing SOFA scores.
+eICU_Dat <- eICU_Dat[!is.na(eICU_Dat$SOFA1),] 
+
+```
+
+
+
+  
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+
+eICU_Dat$SOFAcategory <- 0
+eICU_Dat$SOFAcategory[eICU_Dat$SOFA1 < 2] <- 1
+eICU_Dat$SOFAcategory[eICU_Dat$SOFA1 %in% c(2,3)] <- 2
+eICU_Dat$SOFAcategory[eICU_Dat$SOFA1 %in% c(4,5)] <- 3
+eICU_Dat$SOFAcategory[eICU_Dat$SOFA1 %in% c(6,7)] <- 4
+eICU_Dat$SOFAcategory[eICU_Dat$SOFA1 %in% c(8,9)] <- 5
+eICU_Dat$SOFAcategory[eICU_Dat$SOFA1 %in% c(10,11)] <- 6
+eICU_Dat$SOFAcategory[eICU_Dat$SOFA1 %in% c(12,13)] <- 7
+eICU_Dat$SOFAcategory[eICU_Dat$SOFA1 >= 14] <- 8
+
+eICU_Dat[,c("age")] <- as.numeric(eICU_Dat[,c("age")])
+eICU_Dat$gender[eICU_Dat$gender == "Female"] <- 1      # 1 = Female
+eICU_Dat$gender[eICU_Dat$gender == "Male"] <- 0
+eICU_Dat$gender <- as.numeric(eICU_Dat$gender)
+
+deathBySOFA <- aggregate(as.numeric(eICU_Dat$DiedHosp), list(eICU_Dat$SOFAcategory), mean)
+deathBySOFA[,2] <- round(100*deathBySOFA[,2], 2)
+colnames(deathBySOFA) <- c("SOFA category", "Mortality")
+deathBySOFA_Asian <- aggregate(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "Asian", "DiedHosp"]), list(eICU_Dat[eICU_Dat$ethnicity == "Asian", "SOFAcategory"]), mean)
+deathBySOFA_Asian[,2] <- round(100*deathBySOFA_Asian[,2], 2)
+colnames(deathBySOFA_Asian) <- c("SOFA category", "Mortality")
+deathBySOFA_Black <- aggregate(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "Black", "DiedHosp"]), list(eICU_Dat[eICU_Dat$ethnicity == "Black", "SOFAcategory"]), mean)
+deathBySOFA_Black[,2] <- round(100*deathBySOFA_Black[,2], 2)
+colnames(deathBySOFA_Black) <- c("SOFA category", "Mortality")
+deathBySOFA_White <- aggregate(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "White", "DiedHosp"]), list(eICU_Dat[eICU_Dat$ethnicity == "White", "SOFAcategory"]), mean)
+deathBySOFA_White[,2] <- round(100*deathBySOFA_White[,2], 2)
+colnames(deathBySOFA_White) <- c("SOFA category", "Mortality")
+deathBySOFA_Hispanic <- aggregate(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "Hispanic", "DiedHosp"]), list(eICU_Dat[eICU_Dat$ethnicity == "Hispanic", "SOFAcategory"]), mean)
+deathBySOFA_Hispanic[,2] <- round(100*deathBySOFA_Hispanic[,2], 2)
+colnames(deathBySOFA_Hispanic) <- c("SOFA category", "Mortality")
+
+options(OutDec = ".")
+deathBySOFAsum <- cbind(c("0,1","2,3","4,5","6,7","8,9","10,11","12,13","14+"), deathBySOFA[,2], deathBySOFA_Asian[,2], deathBySOFA_Black[,2], deathBySOFA_White[,2], deathBySOFA_Hispanic[,2])
+colnames(deathBySOFAsum) <- c("SOFA category", "All", "Asian", "Black", "White", "Hispanic")
+
+SMRbySOFA_sum <- data.frame(cbind(deathBySOFA[,1], matrix(round(as.numeric(deathBySOFAsum[,2:6])/as.numeric(deathBySOFAsum[,2]),2),8,5)))
+colnames(SMRbySOFA_sum) <- c("SOFA category", "All", "Asian", "Black", "White", "Hispanic")
+options(OutDec = "\xB7")
+knitr::kable(table(eICU_Dat$ethnicity), format.args = c(width=70), caption = "Number of ITU episodes in the target ethnic groups once episodes with missing data are removed (eICU).", align='c')
+```
+ 
+   
+ 
+
+```{r eval = TRUE, echo = FALSE, warning = FALSE, message = FALSE}
+
+theTable <- aggregate(eICU_Dat[,c("age", "gender", "apachescore", "predictedhospitalmortality", "DiedHosp", "DiedICU")], by=list(eICU_Dat$ethnicity), FUN = function(x){ paste0(mean=round(mean(x, na.rm = TRUE),2), " (", sd = round(sd(x, na.rm = TRUE),2), ")")})
+colnames(theTable) <- c("Ethnicity", "age", "proportion female", "apache score", "Predicted mortality", "Actual mortality", "Death in ICU")
+
+knitr::kable(theTable, caption = "Baseline characteristics for the eICU data.")
+
+```
+  
+  
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+
+# First table ===========
+baseTable1 <- data.frame(matrix(ncol=11, nrow=0))
+for(eth in ethnicitiesList){
+  eICU_DatX <- eICU_Dat[eICU_Dat$ethnicity == eth,]
+  NewRow <- as.matrix(t(c(nrow(eICU_DatX), eth, round(median(eICU_DatX$age, na.rm=TRUE),2), paste(round(quantile(eICU_DatX$age, 0.25, na.rm=TRUE),2), "-",round(quantile(eICU_DatX$age, 0.75, na.rm=TRUE),1)), round(mean(eICU_DatX$gender, na.rm=TRUE),2), median(eICU_DatX$apachescore, na.rm=TRUE), paste(quantile(eICU_DatX$apachescore, 0.25), "-",quantile(eICU_DatX$apachescore, 0.75)),round(mean(eICU_DatX$predictedhospitalmortality, na.rm=TRUE),4), round(sd(eICU_DatX$predictedhospitalmortality, na.rm=TRUE),4), round(mean(eICU_DatX$DiedHosp, na.rm=TRUE),3), round(mean(eICU_DatX$DiedICU, na.rm=TRUE),3))))   
+  baseTable1 <- rbind(baseTable1, NewRow)
+}
+NewRow <- as.matrix(t(c(nrow(eICU_Dat), "All", round(median(eICU_Dat$age, na.rm=TRUE),1), paste(round(quantile(eICU_Dat$age, 0.25, na.rm=TRUE),1), "-",round(quantile(eICU_Dat$age, 0.75, na.rm=TRUE),1)), round(mean(eICU_Dat$gender, na.rm=TRUE),2), median(eICU_Dat$apachescore, na.rm=TRUE), paste(quantile(eICU_Dat$apachescore, 0.25), "-",quantile(eICU_Dat$apachescore, 0.75)),round(mean(eICU_Dat$predictedhospitalmortality, na.rm=TRUE),4), round(sd(eICU_Dat$predictedhospitalmortality, na.rm=TRUE),4), round(mean(eICU_Dat$DiedHosp, na.rm=TRUE),3), round(mean(eICU_Dat$DiedICU, na.rm=TRUE),3)))) 
+baseTable1 <- rbind(baseTable1, NewRow)
+colnames(baseTable1) <- c("Num", "Ethnicity", "median age","IQR age", "proportion female","median Apache score", "IQR Apache score", "mean predicted hospital mortality", "sd predicted hospital mortality", "hospital mortality", "ICU mortality")
+rownames(baseTable1) <- c(ethnicitiesList, "All")
+
+# Second table ===========
+baseTable2 <- data.frame(matrix(ncol=6, nrow=0))
+for(eth in ethnicitiesList){
+  eICU_DatX <- eICU_Dat[eICU_Dat$ethnicity == eth,]
+  NewRow <- as.matrix(t(c(round(median(eICU_DatX$unabridgedunitlos, na.rm=TRUE),1), paste(round(quantile(eICU_DatX$unabridgedunitlos, 0.25),1), "-",round(quantile(eICU_DatX$unabridgedunitlos, 0.75),1)), round(median(eICU_DatX$unabridgedhosplos, na.rm=TRUE),1), paste(round(quantile(eICU_DatX$unabridgedhosplos, 0.25),1), "-", round(quantile(eICU_DatX$unabridgedhosplos, 0.75),1)))))   
+  baseTable2 <- rbind(baseTable2, NewRow)
+}
+NewRow <- as.matrix(t(c(round(median(eICU_Dat$unabridgedunitlos, na.rm=TRUE),1), paste(round(quantile(eICU_Dat$unabridgedunitlos, 0.25),1), "-",round(quantile(eICU_Dat$unabridgedunitlos, 0.75),1)), round(median(eICU_Dat$unabridgedhosplos, na.rm=TRUE),1), paste(round(quantile(eICU_Dat$unabridgedhosplos, 0.25),1), "-", round(quantile(eICU_Dat$unabridgedhosplos, 0.75),1)))))   
+  baseTable2 <- rbind(baseTable2, NewRow)
+rownames(baseTable2) <- c(ethnicitiesList, "All")
+colnames(baseTable2) <- c("median ICU LoS", "IQR ICU LoS", "median hospital LOS", "IQR Hospital LoS")
+
+knitr::kable(baseTable1,format.args=c(width=100), caption = "Baseline characteristics for eICU patients.", align='c')
+```
+
+\pagebreak
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+knitr::kable(baseTable2,format.args=c(width=100), caption = "Baseline characteristics for eICU patients cont'd.", align='c')
+
+```
+
+ 
+# Apache
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE, fig.width=figWidth2, fig.height=figHeight2}
+plotColours <- c("All"='black',"Hispanic"='red', "Black"='blue', "White"='seagreen4', "Asian"='orange')
+logisticPlot(binWidth = 1, database = "eICU", scoreType = "Apache", ethnicitiesList, colours=plotColours, ethNames = c(hisp = "Hispanic", black = "Black", white = "White", asian = "Asian"))
+```
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+
+#par(bg='white', lwd=2, col = 'black')
+calibrate.plot_2(eICU_Dat$DiedHosp, eICU_Dat$predictedhospitalmortality, line.par = list(col='black'), shade.col = adjustcolor('gray', alpha = 0.1), main="Calibration plots for APACHE IVa in eICU")
+calibrate.plot_2(eICU_Dat[eICU_Dat$ethnicity == "White",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "White",]$predictedhospitalmortality, replace = FALSE, line.par = list(lwd=2, col='seagreen4'), shade.col = adjustcolor('seagreen4', alpha = 0.1))
+calibrate.plot_2(eICU_Dat[eICU_Dat$ethnicity == "Asian",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Asian",]$predictedhospitalmortality, replace = FALSE, line.par = list(lwd=2, col='orange'), shade.col = adjustcolor('orange', alpha = 0.1))
+calibrate.plot_2(eICU_Dat[eICU_Dat$ethnicity == "Black",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Black",]$predictedhospitalmortality, replace = FALSE, line.par = list(lwd=2, col='blue'), shade.col = adjustcolor('blue', alpha = 0.1))
+calibrate.plot_2(eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$predictedhospitalmortality, replace = FALSE, line.par = list(lwd=2, col='red'), shade.col = adjustcolor('red', alpha = 0.1))
+legend('topleft',legend=c("All","Hispanic","Black","White","Asian"), lwd=c(2,2,2,2,2), col=c('black','red','blue','seagreen4','orange'))
+
+```
+
+
+This figure shows the ROC curves for Apache IVa predicted mortality in the four principle ethnic groups.
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, results='hide', fig.width=figWidth2, fig.height=figHeight2}
+library(ROCR)
+thePredictionsAll <- eICU_Dat$apacheMort
+thePredictionsAsian <- eICU_Dat[eICU_Dat$ethnicity == "Asian",]$apacheMort
+thePredictionsBlack <- eICU_Dat[eICU_Dat$ethnicity == "Black",]$apacheMort
+thePredictionsHispanic <- eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$apacheMort
+thePredictionsWhite <- eICU_Dat[eICU_Dat$ethnicity == "White",]$apacheMort
+
+theLabelsAll <- eICU_Dat$DiedHosp
+theLabelsAsian <- eICU_Dat[eICU_Dat$ethnicity == "Asian",]$DiedHosp
+theLabelsBlack <- eICU_Dat[eICU_Dat$ethnicity == "Black",]$DiedHosp
+theLabelsHispanic <- eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$DiedHosp
+theLabelsWhite <- eICU_Dat[eICU_Dat$ethnicity == "White",]$DiedHosp
+
+predObjAll <- prediction(predictions = thePredictionsAll, labels = theLabelsAll)
+aucAll <- round(performance(predObjAll, measure = "auc")@y.values[[1]],3)
+perfObjAll <- performance(predObjAll, "tpr","fpr")
+predObjAsian <- prediction(predictions = thePredictionsAsian, labels = theLabelsAsian)
+aucAsian <- round(performance(predObjAsian, measure = "auc")@y.values[[1]],3)
+perfObjAsian <- performance(predObjAsian, "tpr","fpr")
+predObjBlack <- prediction(predictions = thePredictionsBlack, labels = theLabelsBlack)
+aucBlack <- round(performance(predObjBlack, measure = "auc")@y.values[[1]],3)
+perfObjBlack <- performance(predObjBlack, "tpr","fpr")
+predObjHispanic <- prediction(predictions = thePredictionsHispanic, labels = theLabelsHispanic)
+aucHispanic <- round(performance(predObjHispanic, measure = "auc")@y.values[[1]],3)
+perfObjHispanic <- performance(predObjHispanic, "tpr","fpr")
+predObjWhite <- prediction(predictions = thePredictionsWhite, labels = theLabelsWhite)
+aucWhite <- round(performance(predObjWhite, measure = "auc")@y.values[[1]],3)
+perfObjWhite <- performance(predObjWhite, "tpr","fpr")
+
+{
+  plot(perfObjAll, main = "ROC curves for the Apache IVa predicted hospital \nmortality in the eICU database by ethnicity.", lwd=3, cex.main=0.9)
+  plot(perfObjAsian, add = TRUE, col = 'orange', lwd=3)
+  plot(perfObjBlack, add = TRUE, col = 'blue', lwd=3)
+  plot(perfObjHispanic, add = TRUE, col = 'red', lwd=3)
+  plot(perfObjWhite, add = TRUE, col = 'seagreen4', lwd=3)
+  abline(0,1,col='black', lty=2)
+  op <- par(cex = 0.8)
+  legend('bottomright',legend = c(paste("All", aucAll),paste("Hispanic",aucHispanic),paste("Black", aucBlack), paste("White",aucWhite),paste("Asian", aucAsian)), col=c("black","red","blue","seagreen4","orange"), lty = c(1,1,1,1,1), lwd=c(3,3,3,3,3))
+}
+
+```
+
+
+ 
+\pagebreak
+
+# Now determine the p value for ethnicity as a predictor of each of the baseline variables.
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+
+pAge <- lm(eICU_Dat$age ~ eICU_Dat$ethnicity)
+print(summary(pAge))
+pgender <- lm(eICU_Dat$gender ~ eICU_Dat$ethnicity)
+print(summary(pgender))
+```
+
+\pagebreak
+ 
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+pLoS <- lm(eICU_Dat$unabridgedunitlos ~ eICU_Dat$ethnicity)
+print(summary(pLoS))
+pDiedHosp <- lm(eICU_Dat$DiedHosp ~ eICU_Dat$ethnicity)
+print(summary(pDiedHosp))
+```
+
+\pagebreak
+ 
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+pDiedICU <- lm(eICU_Dat$DiedICU ~ eICU_Dat$ethnicity)
+print(summary(pDiedICU))
+```
+
+\pagebreak
+
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+pPredMort <- lm(eICU_Dat$predictedicumortality ~ eICU_Dat$ethnicity)
+print(summary(pPredMort))
+pICUmort <- lm(eICU_Dat$predictedicumortality ~ eICU_Dat$ethnicity)
+print(summary(pICUmort))
+
+```
+
+\pagebreak
+
+ 
+   
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+
+AUCall_Apache <- round(ci.auc(eICU_Dat$DiedHosp, eICU_Dat$apacheMort),3)
+AUCasian_Apache <- round(ci.auc(eICU_Dat[eICU_Dat$ethnicity == "Asian",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Asian",]$apacheMort),3)
+AUCblack_Apache <- round(ci.auc(eICU_Dat[eICU_Dat$ethnicity == "Black",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Black",]$apacheMort),3)
+AUChispanic_Apache <- round(ci.auc(eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$apacheMort),3)
+AUCwhite_Apache <- round(ci.auc(eICU_Dat[eICU_Dat$ethnicity == "White",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "White",]$apacheMort),3)
+
+```
+ 
+The corresponding AUCs (95% CI) are:  
+All - `r aucAll` (`r AUCall_Apache`),  
+Hispanic - `r aucHispanic` (`r AUChispanic_Apache`),  
+Black - `r aucBlack` (`r AUCblack_Apache`),  
+White - `r aucWhite` (`r AUCwhite_Apache`) and  
+Asian -  , `r aucAsian` (`r AUCasian_Apache`).
+ 
+\
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+# Now test the difference between ROCs.
+rAPACHE_eICU <- roc(response = eICU_Dat$DiedHosp, predictor = eICU_Dat$apacheMort)
+
+rWhite_eICU <- roc(response=eICU_Dat[eICU_Dat$ethnicity == "White",]$DiedHosp, predictor = eICU_Dat[eICU_Dat$ethnicity == "White",]$apacheMort)
+rNotWhite_eICU <- roc(response=eICU_Dat[!(eICU_Dat$ethnicity == "White"),]$DiedHosp, predictor = eICU_Dat[!(eICU_Dat$ethnicity == "White"),]$apacheMort)
+roc.test(rWhite_eICU, rNotWhite_eICU)
+roc.test(rWhite_eICU, rAPACHE_eICU)
+
+rBlack_eICU <- roc(response=eICU_Dat[eICU_Dat$ethnicity == "Black",]$DiedHosp, predictor = eICU_Dat[eICU_Dat$ethnicity == "Black",]$apacheMort)
+rNotBlack_eICU <- roc(response=eICU_Dat[!(eICU_Dat$ethnicity == "Black"),]$DiedHosp, 
+                          predictor = eICU_Dat[!(eICU_Dat$ethnicity == "Black"),]$apacheMort)
+roc.test(rBlack_eICU, rNotBlack_eICU)
+roc.test(rBlack_eICU, rAPACHE_eICU)
+
+rAsian_eICU <- roc(response=eICU_Dat[eICU_Dat$ethnicity == "Asian",]$DiedHosp, predictor = eICU_Dat[eICU_Dat$ethnicity == "Asian",]$apacheMort)
+rNotAsian_eICU <- roc(response=eICU_Dat[!(eICU_Dat$ethnicity == "Asian"),]$DiedHosp, predictor = eICU_Dat[!(eICU_Dat$ethnicity == "Asian"),]$apacheMort)
+roc.test(rAsian_eICU, rNotAsian_eICU)
+roc.test(rAsian_eICU, rAPACHE_eICU)
+
+rHispanic_eICU <- roc(response=eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$DiedHosp, predictor = eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$apacheMort)
+rNotHispanic_eICU <- roc(response=eICU_Dat[!(eICU_Dat$ethnicity == "Hispanic"),]$DiedHosp, predictor = eICU_Dat[!(eICU_Dat$ethnicity == "Hispanic"),]$apacheMort)
+roc.test(rHispanic_eICU, rNotHispanic_eICU)
+roc.test(rHispanic_eICU, rAPACHE_eICU)
+
+```
+
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE, results='hide', fig.width = 12, fig.height=8}
+
+sampleSizes_eICU <- c("n",  as.character(sum(eICU_Dat$ethnicity == "Hispanic")), as.character(sum(eICU_Dat$ethnicity == "Black")), as.character(sum(eICU_Dat$ethnicity == "White")),as.character(sum(eICU_Dat$ethnicity == "Asian")), as.character(nrow(eICU_Dat)))
+plotForest("eICU",AUChispanic_Apache, AUCblack_Apache, AUCwhite_Apache,AUCasian_Apache, AUCall_Apache, "Apache IVa", "AUC",doPNG=FALSE, sampleSizes_eICU, tag="Apache")
+```
+
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+
+# eICU - Apache
+SMRall_eICU_Ap <- SMR(as.numeric(eICU_Dat$DiedHosp), eICU_Dat$apacheMort)
+SMRall_eICU_Ap <- c(SMRall_eICU_Ap[5], SMRall_eICU_Ap[4], SMRall_eICU_Ap[6])
+SMRasian_eICU_Ap <- SMR(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "Asian",]$DiedHosp), eICU_Dat[eICU_Dat$ethnicity == "Asian",]$apacheMort)
+SMRasian_eICU_Ap <- c(SMRasian_eICU_Ap[5], SMRasian_eICU_Ap[4], SMRasian_eICU_Ap[6])
+SMRblack_eICU_Ap <- SMR(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "Black",]$DiedHosp), eICU_Dat[eICU_Dat$ethnicity == "Black",]$apacheMort)
+SMRblack_eICU_Ap <- c(SMRblack_eICU_Ap[5], SMRblack_eICU_Ap[4], SMRblack_eICU_Ap[6])
+SMRhispanic_eICU_Ap <- SMR(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$DiedHosp), eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$apacheMort)
+SMRhispanic_eICU_Ap <- c(SMRhispanic_eICU_Ap[5], SMRhispanic_eICU_Ap[4], SMRhispanic_eICU_Ap[6])
+SMRwhite_eICU_Ap <- SMR(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "White",]$DiedHosp), eICU_Dat[eICU_Dat$ethnicity == "White",]$apacheMort)
+SMRwhite_eICU_Ap <- c(SMRwhite_eICU_Ap[5], SMRwhite_eICU_Ap[4], SMRwhite_eICU_Ap[6])
+
+```
+
+```{r eval = TRUE, echo=FALSE, message = FALSE, warning = FALSE, results='hide', fig.width=12, fig.height=8}
+sampleSizes_eICU <- c("n",  as.character(sum(eICU_Dat$ethnicity == "Hispanic")), as.character(sum(eICU_Dat$ethnicity == "Black")))
+plotForest("eICU",round(SMRhispanic_eICU_Ap,3), round(SMRblack_eICU_Ap,3), round(SMRwhite_eICU_Ap,3), round(SMRasian_eICU_Ap,3), round(SMRall_eICU_Ap,3), "Apache score", "SMR",doPNG=FALSE, sampleSizes_eICU, tag="Apache")
+
+```
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+
+
+total_eICU <- eICU_Dat[,c("age", "ethnicity", "predictedhospitalmortality", "DiedHosp", "SOFA1", "SOFAcategory")]
+colnames(total_eICU) <- c("AGE", "ETHNICITY2", "PREDICTED", "DiedHosp", "SOFA", "SOFAcategory")
+total_eICU[total_eICU$ETHNICITY2 == "White","ETHNICITY2"] <- "White"
+total_eICU[total_eICU$ETHNICITY2 == "African American","ETHNICITY2"] <- "Black"
+total_eICU[total_eICU$ETHNICITY2 == "Asian","ETHNICITY2"] <- "Asian"
+total_eICU[total_eICU$ETHNICITY2 == "Hispanic","ETHNICITY2"] <- "Hispanic"
+
+total_MIMIC <- icustays[, c("AGE", "ETHNICITY2", "OASISprob", "DiedHosp", "SOFA_Adm", "SOFAcategory")]
+colnames(total_MIMIC) <- c("AGE", "ETHNICITY2", "PREDICTED", "DiedHosp", "SOFA", "SOFAcategory")
+total_MIMIC[total_MIMIC$DiedHosp == "TRUE", "DiedHosp"] <- 1
+total_MIMIC[total_MIMIC$DiedHosp == "FALSE", "DiedHosp"] <- 0
+total_eICU[total_eICU$DiedHosp == "TRUE", "DiedHosp"] <- 1
+total_eICU[total_eICU$DiedHosp == "FALSE", "DiedHosp"] <- 0
+total_MIMIC$AGE <- round(total_MIMIC$AGE, 0)
+
+cutPoints <- c(0, 0.05, 0.1, 0.2, 0.5, 1.0)
+
+MIMIC_SMRbyRiskCat <- matrix(rep(0, length(cutPoints)-1)*length(ethnicitiesList), length(ethnicitiesList), length(cutPoints)-1)
+rownames(MIMIC_SMRbyRiskCat) <- ethnicitiesList
+colnames(MIMIC_SMRbyRiskCat) <- c(" 0-5%"," 5-10%","10-20%", "20-50%","50-100%" )
+
+MIMIC_byRiskCat <- list()
+catNames <- c(" 0-5%"," 5-10%","10-20%", "20-50%","50-100%" )
+icustays$riskSeg <- NA
+for(i in 2:length(cutPoints)){
+  icustays[icustays$OASISprob >= cutPoints[i-1] & icustays$OASISprob < cutPoints[i],]$riskSeg <- catNames[i-1]
+}
+
+MIMIC_byRiskEthn <- aggregate(icustays[,c("OASISprob", "DiedHosp")], list(icustays$ETHNICITY2, icustays$riskSeg), mean)
+MIMIC_byRiskEthn$SMR <- round(MIMIC_byRiskEthn[,4]/MIMIC_byRiskEthn[,3],2)
+colnames(MIMIC_byRiskEthn) <- c("Ethnicity", "riskGroup", "Risk", "Mort", "SMR")
+
+MIMIC_SMRbyRiskTable <- dcast(MIMIC_byRiskEthn[,c("Ethnicity","riskGroup","SMR")], Ethnicity ~ riskGroup)
+
+knitr::kable(MIMIC_SMRbyRiskTable, align=c('r','c'), caption="SMRs segmented by ethnicity and risk group in MIMIC-III.")
+
+```
+
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+
+
+total_predMort <- rbind(as.matrix(eICU_Dat[,c("age", "ethnicity", "predictedhospitalmortality", "DiedHosp")]), as.matrix(icustays[, c("AGE", "ETHNICITY2", "OASISprob", "DiedHosp")]))
+icustays$riskSeg <- NA
+eICU_Dat$riskSeg <- NA
+
+cutPoints <- c(0, 0.05, 0.1, 0.2, 0.5, 1.0)
+eICU_SMRbyRiskCat <- data.frame(matrix(rep(0, length(cutPoints)-1)*length(ethnicitiesList), length(ethnicitiesList), length(cutPoints)-1))
+rownames(eICU_SMRbyRiskCat) <- ethnicitiesList
+colnames(eICU_SMRbyRiskCat) <- c("0-5%","5-10%","10-20%", "20-50%","50-100%" )
+
+eICU_byRiskCat <- list()
+catNames <- c(" 0-5%"," 5-10%","10-20%", "20-50%","50-100%" )
+for(i in 2:length(cutPoints)){
+	eICU_Dat[eICU_Dat$predictedhospitalmortality >= cutPoints[i-1] & eICU_Dat$predictedhospitalmortality < cutPoints[i],]$riskSeg <- catNames[i-1]
+}
+eiCU_byRiskEthn <- aggregate(eICU_Dat[,c("predictedhospitalmortality", "DiedHosp")], list(eICU_Dat$ethnicity, eICU_Dat$riskSeg), mean)
+eiCU_byRiskEthn$SMR <- round(eiCU_byRiskEthn[,4]/eiCU_byRiskEthn[,3],2)
+colnames(eiCU_byRiskEthn) <- c("Ethnicity", "riskGroup", "Risk", "Mort", "SMR")
+
+eICU_SMRbyRiskTable <- dcast(eiCU_byRiskEthn[,c("Ethnicity","riskGroup","SMR")], Ethnicity ~ riskGroup)
+knitr::kable(eICU_SMRbyRiskTable, align=c('r','c'), caption="SMRs segmented by ethnicity and risk group in eICU.")
+
+```
+
+
+## SOFA analysis
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE, fig.width=figWidth2, fig.height=figHeight2}
+plotColours <- c("All"='black',"Hispanic"='red', "Black"='blue', "White"='seagreen4', "Asian"='orange')
+logisticPlot(binWidth = 1, database = "eICU", scoreType = "SOFA", ethnicitiesList, colours=plotColours, ethNames = c(hisp = "Hispanic", black = "Black", white = "White", asian = "Asian"))
+SOFAmort <- read.csv("SOFAmort_eICU.csv")
+eICU_Dat$SOFAmort <- SOFAmort[,2]
+#----------------------------------------- eICU calibration plot -----------------
+
+
+#par(bg='white', lwd=2, col = 'black')
+calibrate.plot_2(eICU_Dat$DiedHosp, eICU_Dat$SOFAmort, line.par = list(col='black'), shade.col = adjustcolor('gray', alpha = 0.3), main="Calibration plots for SOFA scores \npredicted mortality in eICU")
+calibrate.plot_2(eICU_Dat[eICU_Dat$ethnicity == "White",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "White",]$SOFAmort, replace = FALSE, line.par = list(lwd=2, col='seagreen4'), shade.col = adjustcolor('seagreen4', alpha = 0.1))
+calibrate.plot_2(eICU_Dat[eICU_Dat$ethnicity == "Asian",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Asian",]$SOFAmort, replace = FALSE, line.par = list(lwd=2, col='orange'), shade.col = adjustcolor('orange', alpha = 0.1))
+calibrate.plot_2(eICU_Dat[eICU_Dat$ethnicity == "Black",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Black",]$SOFAmort, replace = FALSE, line.par = list(lwd=2, col='blue'), shade.col = adjustcolor('blue', alpha = 0.1))
+calibrate.plot_2(eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$SOFAmort, replace = FALSE, line.par = list(lwd=2, col='red'), shade.col = adjustcolor('red', alpha = 0.1))
+legend('topleft',legend=c("All","Hispanic","Black","White","Asian"), lwd=c(2,2,2,2,2), col=c('black','red','blue','seagreen4','orange'))
+
+#---------------------------------------------------------------------------------
+  
+```
+
+
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+knitr::kable(deathBySOFAsum, format.args = c(width=70), caption = "Mortality rates by ethnic group and day 1 SOFA category (eICU).", align='c')
+
+```
+ 
+\pagebreak
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+knitr::kable(SMRbySOFA_sum, format.args = c(width=70), caption = "Mortality in the eICU database by ethnic group and day 1 SOFA category standardised to the total mortality for the SOFA category (eICU).", align='c')
+```
+
+\
+
+The total number of episodes upon which the SOFA analysis in the eICU database is based is `r nrow(eICU_Dat)`.
+
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+options(OutDec = ".")
+eICU_Dat$SOFAcategory2 <- 0
+eICU_Dat$SOFAcategory2[eICU_Dat$SOFA1 < 8] <- 1
+eICU_Dat$SOFAcategory2[eICU_Dat$SOFA1 %in% 8:11] <- 2
+eICU_Dat$SOFAcategory2[eICU_Dat$SOFA1 > 11] <- 3
+
+eICU_Dat[,c("age")] <- as.numeric(eICU_Dat[,c("age")])
+eICU_Dat$gender[eICU_Dat$gender == "Female"] <- 1      # 1 = Female
+eICU_Dat$gender[eICU_Dat$gender == "Male"] <- 0
+eICU_Dat$gender <- as.numeric(eICU_Dat$gender)
+
+deathBySOFA2 <- aggregate(as.numeric(eICU_Dat$DiedHosp), list(eICU_Dat$SOFAcategory2), mean)
+deathBySOFA2[,2] <- round(100*deathBySOFA2[,2], 2)
+colnames(deathBySOFA2) <- c("SOFA category", "Mortality")
+deathBySOFA2_Asian <- aggregate(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "Asian", "DiedHosp"]), list(eICU_Dat[eICU_Dat$ethnicity == "Asian", "SOFAcategory2"]), mean)
+deathBySOFA2_Asian[,2] <- round(100*deathBySOFA2_Asian[,2], 2)
+colnames(deathBySOFA2_Asian) <- c("SOFA category", "Mortality")
+deathBySOFA2_Black <- aggregate(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "Black", "DiedHosp"]), list(eICU_Dat[eICU_Dat$ethnicity == "Black", "SOFAcategory2"]), mean)
+deathBySOFA2_Black[,2] <- round(100*deathBySOFA2_Black[,2], 2)
+colnames(deathBySOFA2_Black) <- c("SOFA category", "Mortality")
+deathBySOFA2_White <- aggregate(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "White", "DiedHosp"]), list(eICU_Dat[eICU_Dat$ethnicity == "White", "SOFAcategory2"]), mean)
+deathBySOFA2_White[,2] <- round(100*deathBySOFA2_White[,2], 2)
+colnames(deathBySOFA2_White) <- c("SOFA category", "Mortality")
+deathBySOFA2_Hispanic <- aggregate(as.numeric(eICU_Dat[eICU_Dat$ethnicity == "Hispanic", "DiedHosp"]), list(eICU_Dat[eICU_Dat$ethnicity == "Hispanic", "SOFAcategory2"]), mean)
+deathBySOFA2_Hispanic[,2] <- round(100*deathBySOFA2_Hispanic[,2], 2)
+colnames(deathBySOFA2_Hispanic) <- c("SOFA category", "Mortality")
+
+
+theNumbers <- c(nrow(eICU_Dat[eICU_Dat$SOFAcategory2 == 1,]), 
+                nrow(eICU_Dat[eICU_Dat$SOFAcategory2 == 2,]), 
+                nrow(eICU_Dat[eICU_Dat$SOFAcategory2 == 3,])
+              )
+
+
+deathBySOFA2sum <- cbind(c("0-7","8-11","11+"), theNumbers, deathBySOFA2[,2], deathBySOFA2_Hispanic[,2], deathBySOFA2_Black[,2], deathBySOFA2_White[,2], deathBySOFA2_Asian[,2])
+colnames(deathBySOFA2sum) <- c("SOFA category", "Nums", "All", "Hispanic", "Black", "White","Asian" )
+
+SMRbySOFA_sum2 <- data.frame(cbind(deathBySOFA2[,1], theNumbers, matrix( round( as.numeric( deathBySOFA2sum[,3:7]) / as.numeric( deathBySOFA2sum[,3]), 2),3,5)))
+
+colnames(SMRbySOFA_sum2) <- c("SOFA category", "Nums", "All", "Hispanic", "Black", "White", "Asian")
+
+options(OutDec = "\xB7")
+knitr::kable(deathBySOFA2sum, format.args = c(width=70), caption = "Mortality rates by ethnic group and SOFA category (eICU).", align='c')
+
+```
+ 
+\
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+SMRbySOFA_sum2[,1] <- c("0-7","8-11","11+")
+knitr::kable(SMRbySOFA_sum2, format.args = c(width=70), caption = "Mortality in the eICU database by ethnic group and day 1 SOFA category standardised to the total mortality for the SOFA category (eICU).", align='c')
+
+```
+
+
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, results='hide', fig.width=figWidth2, fig.height=figHeight2}
+# Now the ROC for SOFA scores in eICU
+library(ROCR)
+thePredictionsAll_SE <- eICU_Dat$SOFA1
+thePredictionsAsian_SE <- eICU_Dat[eICU_Dat$ethnicity == "Asian",]$SOFA1
+thePredictionsBlack_SE <- eICU_Dat[eICU_Dat$ethnicity == "Black",]$SOFA1
+thePredictionsHispanic_SE <- eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$SOFA1
+thePredictionsWhite_SE <- eICU_Dat[eICU_Dat$ethnicity == "White",]$SOFA1
+
+theLabelsAll_SE <- eICU_Dat$DiedHosp
+theLabelsAsian_SE <- eICU_Dat[eICU_Dat$ethnicity == "Asian",]$DiedHosp
+theLabelsBlack_SE <- eICU_Dat[eICU_Dat$ethnicity == "Black",]$DiedHosp
+theLabelsHispanic_SE <- eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$DiedHosp
+theLabelsWhite_SE <- eICU_Dat[eICU_Dat$ethnicity == "White",]$DiedHosp
+
+predObjAll_SE <- prediction(predictions = thePredictionsAll_SE, labels = theLabelsAll_SE)
+aucAll_SE <- round(performance(predObjAll_SE, measure = "auc")@y.values[[1]],3)
+perfObjAll_SE <- performance(predObjAll_SE, "tpr","fpr")
+predObjAsian_SE <- prediction(predictions = thePredictionsAsian_SE, labels = theLabelsAsian_SE)
+aucAsian_SE <- round(performance(predObjAsian_SE, measure = "auc")@y.values[[1]],3)
+perfObjAsian_SE <- performance(predObjAsian_SE, "tpr","fpr")
+predObjBlack_SE <- prediction(predictions = thePredictionsBlack_SE, labels = theLabelsBlack_SE)
+aucBlack_SE <- round(performance(predObjBlack_SE, measure = "auc")@y.values[[1]],3)
+perfObjBlack_SE <- performance(predObjBlack_SE, "tpr","fpr")
+predObjHispanic_SE <- prediction(predictions = thePredictionsHispanic_SE, labels = theLabelsHispanic_SE)
+aucHispanic_SE <- round(performance(predObjHispanic_SE, measure = "auc")@y.values[[1]],3)
+perfObjHispanic_SE <- performance(predObjHispanic_SE, "tpr","fpr")
+predObjWhite_SE <- prediction(predictions = thePredictionsWhite_SE, labels = theLabelsWhite_SE)
+aucWhite_SE <- round(performance(predObjWhite_SE, measure = "auc")@y.values[[1]],3)
+perfObjWhite_SE <- performance(predObjWhite_SE, "tpr","fpr")
+
+{
+  plot(perfObjAll_SE, main = "ROC curves for the SOFA scores in the eICU \ndatabase by ethnicity.", lwd=3, cex.main=0.9)
+  plot(perfObjAsian_SE, add = TRUE, col = 'orange', lwd=3)
+  plot(perfObjBlack_SE, add = TRUE, col = 'blue', lwd=3)
+  plot(perfObjHispanic_SE, add = TRUE, col = 'red', lwd=3)
+  plot(perfObjWhite_SE, add = TRUE, col = 'seagreen4', lwd=3)
+  abline(0,1,col='black', lty=2)
+  op <- par(cex = 0.8)
+  legend('bottomright',legend = c(paste("All", aucAll_SE),paste("Hispanic",aucHispanic_SE),paste("Black", aucBlack_SE),  paste("White",aucWhite_SE),paste("Asian", aucAsian_SE)), col=c("black","red","blue","seagreen4","orange"), lty = c(1,1,1,1,1), lwd=c(3,3,3,3,3))
+}
+
+```
+ 
+
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, results='hide', fig.width=12, fig.height=8}
+# SOFA scores for MIMIC-II
+library(pROC)
+AUCall_SOFA_M <- round(ci.auc(icustays$DiedHosp, icustays$SOFA_Adm),3)
+AUCasian_SOFA_M <- round(ci.auc(icustays[icustays$ETHNICITY2 == "Asian",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Asian",]$SOFA_Adm),3)
+AUCblack_SOFA_M <- round(ci.auc(icustays[icustays$ETHNICITY2 == "Black",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Black",]$SOFA_Adm),3)
+AUChispanic_SOFA_M <- round(ci.auc(icustays[icustays$ETHNICITY2 == "Hispanic",]$DiedHosp, icustays[icustays$ETHNICITY2 == "Hispanic",]$SOFA_Adm),3)
+AUCwhite_SOFA_M <- round(ci.auc(icustays[icustays$ETHNICITY2 == "White",]$DiedHosp, icustays[icustays$ETHNICITY2 == "White",]$SOFA_Adm),3)
+
+plotForest("MIMIC-III",AUChispanic_SOFA_M, AUCblack_SOFA_M, AUCwhite_SOFA_M, AUCasian_SOFA_M, AUCall_SOFA_M, "admission SOFA score", "AUC",doPNG=FALSE, sampleSizes_M, tag="SOFA")
+
+```
+ 
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, results='hide', fig.width=12, fig.height=8}
+# SOFA score in eICU
+AUCall_SOFA_E <- round(ci.auc(eICU_Dat$DiedHosp, eICU_Dat$SOFA1),3)
+AUCasian_SOFA_E <- round(ci.auc(eICU_Dat[eICU_Dat$ethnicity == "Asian",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Asian",]$SOFA1),3)
+AUCblack_SOFA_E <- round(ci.auc(eICU_Dat[eICU_Dat$ethnicity == "Black",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Black",]$SOFA1),3)
+AUChispanic_SOFA_E <- round(ci.auc(eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "Hispanic",]$SOFA1),3)
+AUCwhite_SOFA_E <- round(ci.auc(eICU_Dat[eICU_Dat$ethnicity == "White",]$DiedHosp, eICU_Dat[eICU_Dat$ethnicity == "White",]$SOFA1),3)
+
+plotForest("eICU", AUChispanic_SOFA_E, AUCblack_SOFA_E, AUCwhite_SOFA_E, AUCasian_SOFA_E, AUCall_SOFA_E, "admission SOFA score", "AUC",doPNG=FALSE, sampleSizes_eICU, tag="SOFA")
+
+```
+
+
+
+\pagebreak
+
+
+## SMRs (lower 95% CO, mean, upper 95% CI)
+### SMR, eICU, Apache, all  
+`r SMRall_eICU_Ap`  
+
+### SMR, eICU, Apache, Asian  
+`r SMRasian_eICU_Ap`  
+
+### SMR, eICU, Apache, Black  
+`r SMRblack_eICU_Ap`  
+
+### SMR, eICU, Apache, Hispanic  
+`r SMRhispanic_eICU_Ap`  
+
+### SMR, eICU, Apache, White  
+`r SMRwhite_eICU_Ap`  
+
+### SMR, MIMIC-III, Apache, all  
+`r SMRall_MIMIC_Oa`  
+
+### SMR,  MIMIC-III, Apache, Asian 
+`r SMRasian_MIMIC_Oa`  
+
+### SMR,  MIMIC-III, Apache, Black  
+`r SMRblack_MIMIC_Oa`  
+
+### SMR,  MIMIC-III, Apache, Hispanic  
+`r SMRhispanic_MIMIC_Oa`  
+
+### SMR,  MIMIC-III, Apache, White  
+`r SMRwhite_MIMIC_Oa`
+
+  
+
+\pagebreak
+
+
+## Counts
+
+The total number of episodes in the MIMIC-II data is `r MIMICnos$Total`.
+
+Once all occurrences of reported ages below `r minAge` and above `r maxAge` are removed is `r MIMICnos$exAges`.
+
+Of these, `r MIMICnos$incEthnicity1` are in the list of included ethnic groups (`r ethnicitiesList`).
+
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+SMRcalc <- data.frame(Ethnicity = character(), 
+                 Source = character(), 
+                 Count = integer(), 
+                 "Predicted mortality" = numeric(), 
+                 "Actual mortality" = numeric(),
+                 "Predicted deaths" = integer(),
+                 "Actual death" = integer()
+                 )
+for(eth in ethnicitiesList){
+  
+  if(eth == "Hispanic"){
+    eth2 <- "Hispanic"
+  }else if(eth == "Asian"){
+    eth2 <- "Asian"
+  }else if(eth == "White"){
+    eth2 <- "White"
+  }else{
+    eth2 <- "Black"
+  }
+  
+  
+  theRow <- c(eth, 
+              "eICU", 
+              nrow(eICU_Dat[eICU_Dat$ethnicity == eth, ]),
+              round(mean(eICU_Dat[eICU_Dat$ethnicity == eth, ]$apacheMort),2),
+              round(mean(eICU_Dat[eICU_Dat$ethnicity == eth, ]$apacheMort) * nrow(eICU_Dat[eICU_Dat$ethnicity == eth, ]),0),
+              nrow(eICU_Dat[eICU_Dat$ethnicity == eth & eICU_Dat$DiedHosp == TRUE, ]),
+              round(mean(eICU_Dat[eICU_Dat$ethnicity == eth, ]$DiedHosp) / mean(eICU_Dat[eICU_Dat$ethnicity == eth, ]$apacheMort),2)
+              )
+  theRow2 <- c(eth, 
+              "MIMIC-III", 
+              nrow(icustays[icustays$ETHNICITY2 == eth2, ]),
+              round(mean(icustays[icustays$ETHNICITY2 == eth2, ]$OASISprob),2),
+              round(mean(icustays[icustays$ETHNICITY2 == eth2, ]$OASISprob) * nrow(icustays[icustays$ETHNICITY2 == eth2, ]),0),
+              nrow(icustays[icustays$ETHNICITY2 == eth2 & icustays$DiedHosp == TRUE, ]),
+              round(mean(icustays[icustays$ETHNICITY2 == eth2, ]$DiedHosp) / mean(icustays[icustays$ETHNICITY2 == eth2, ]$OASISprob),2)
+              )
+  
+  SMRcalc <- rbind(SMRcalc, theRow, theRow2)
+}
+
+colnames(SMRcalc) <- c("Ethnicity", "Dataset", "Total number", "Mean predicted mortality","Predicted deaths", "Actual deaths", "SMR")
+
+knitr::kable(SMRcalc, format.args = c(width=70), caption = "Predicted and observed mortality in different ethnic groups along (SMR = actual/predicted mortality ratio).", align='c')
+
+```
+
+
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+SOFO_0_M <- nrow(icustays[icustays$SOFA_Adm == 0,])
+SOFO_0_E <- nrow(eICU_Dat[eICU_Dat$SOFA1 == 0,])
+
+SOFO_0_M_D <- nrow(icustays[icustays$SOFA_Adm == 0 & icustays$DiedHosp == TRUE,])
+SOFO_0_E_D <- nrow(eICU_Dat[eICU_Dat$SOFA1 == 0 & eICU_Dat$DiedHosp == 1,])
+
+```
+
+There were `r SOFO_0_E` admissions with an an initial SOFA score of 0 in the eICU database, of which, `r SOFO_0_E_D` died.
+There were `r SOFO_0_M` admissions with an an initial SOFA score of 0 in the MIMIC-III database, of which, `r SOFO_0_M_D` died.
+
+\pagebreak
+
+# Explanatory power of ethnicity and predictive scoring
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+LR_Apache <- glm(DiedHosp ~ apachescore, data = eICU_Dat,family=binomial(link=logit))
+R2_Apache <- rsq(LR_Apache)
+knitr::kable(round(summary(LR_Apache)$coefficients, 3), format.args = c(width=70), caption = "Logistic regression of Apache score and in-hospital death (eICU)", align = 'c')
+```
+R^2^ = `r R2_Apache`.
+
+\
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+LR_OASIS <- glm(DiedHosp ~ OASIS, data = icustays,family=binomial(link=logit))
+R2_Oasis <- rsq(LR_OASIS)
+knitr::kable(round(summary(LR_OASIS)$coefficients, 3), format.args = c(width=70), caption = "Logistic regression of Oasis score and in-hospital death (MIMIC-III)", align = 'c')
+```
+R^2^ = `r R2_Oasis`.
+
+\
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+LR_SOFA_MIMIC <- glm(DiedHosp ~ SOFA_Adm, data = icustays,family=binomial(link=logit))
+R2_SOFA_MIMIC <- rsq(LR_SOFA_MIMIC)
+knitr::kable(round(summary(LR_SOFA_MIMIC)$coefficients, 3), format.args = c(width=70), caption = "Logistic regression of SOFA score and in-hospital death (MIMIC-III)", align = 'c')
+```
+R^2^ = `r R2_SOFA_MIMIC`.
+
+\
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+LR_SOFA_eICU <- glm(DiedHosp ~ SOFA1, data = eICU_Dat,family=binomial(link=logit))
+R2_SOFA_eICU <- rsq(LR_SOFA_eICU)
+knitr::kable(round(summary(LR_SOFA_eICU)$coefficients, 3), format.args = c(width=70), caption = "Logistic regression of SOFA score and in-hospital death (eICU)", align = 'c')
+```
+R^2^ = `r R2_SOFA_eICU`.
+
+\pagebreak
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+
+LR_MIMIC <- glm(DiedHosp ~ ETHNICITY2, data = icustays,family=binomial(link=logit))
+R2_MIMIC <- rsq(LR_MIMIC)
+LR_eICU <- glm(DiedHosp ~ ethnicity, data = eICU_Dat,family=binomial(link=logit))
+R2_eICU <- rsq(LR_eICU)
+
+knitr::kable(round(summary(LR_eICU)$coefficients, 3), format.args = c(width=70), caption = "Logistic regression of ethnicity and in-hospital death (eICU)", align='c')
+
+```
+R^2^ = `r R2_eICU`.
+
+\
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+knitr::kable(round(summary(LR_MIMIC)$coefficients, 3), format.args = c(width=70), caption = "Logistic regression of ethnicity and in-hospital death (MIMIC-III)", align='c')
+
+```
+R^2^ = `r R2_MIMIC`.
+
+\
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+LR_MIMIC_Oasis <- glm(DiedHosp ~ ETHNICITY2 + OASIS, data = icustays,family=binomial(link=logit))
+R2_MIMIC_Oasis <- rsq(LR_MIMIC_Oasis)
+LR_eICU_Apache <- glm(DiedHosp ~ ethnicity + apachescore, data = eICU_Dat,family=binomial(link=logit))
+R2_eICU_Apache <- rsq(LR_eICU_Apache)
+
+knitr::kable(round(summary(LR_eICU_Apache)$coefficients, 3), format.args = c(width=70), caption = "Logistic regression of ethnicity and in-hospital death controlled for Apache score (eICU).", align='c')
+
+```
+R^2^ = `r R2_eICU_Apache`.
+
+\pagebreak
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+
+knitr::kable(round(summary(LR_MIMIC_Oasis)$coefficients,3), format.args = c(width=70), caption = "Logistic regression of ethnicity and in-hospital death controlled for Oasis score (MIMIC-II).", align='c')
+
+```
+R^2^ = `r R2_MIMIC_Oasis`.
+
+\
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+
+LR_SOFA_eICU_Eth <- glm(DiedHosp ~ ethnicity + SOFA1, data = eICU_Dat,family=binomial(link=logit))
+R2_SOFA_eICU_Eth <- rsq(LR_SOFA_eICU_Eth)
+
+knitr::kable(round(summary(LR_SOFA_eICU_Eth)$coefficients, 3), format.args = c(width=70), caption = "Logistic regression of ethnicity and in-hospital death controlled for SOFA score (eICU).", align='c')
+
+```
+R^2^ = `r R2_SOFA_eICU`.
+
+\
+
+
+R^2^ = `r R2_SOFA_MIMIC_Eth`.
+
+```{r eval = TRUE, echo = FALSE, warning=FALSE, message = FALSE}
+R2_Partial_SOFA_eICU <- rsq.partial(LR_SOFA_eICU_Eth)
+R2_Partial_Apache_Eth <- rsq.partial(LR_eICU_Apache)
+
+ R2_Partial_SOFA_MIMIC <- rsq.partial(LR_SOFA_MIMIC_Eth)
+R2_Partial_Oasis_Eth <- rsq.partial(LR_MIMIC_Oasis)
+
+```
+
+\pagebreak
+
+# The contibution of the risk scores and ethnicity to variation in in-hospital mortality in the eICU and MIMIC-II databases.
+
+The Oasis score explains `r round(R2_Partial_Oasis_Eth$partial.rsq[2]*100, 3)`% of the variation in mortality, and the ethnicity explains `r round(R2_Partial_Oasis_Eth$partial.rsq[1]*100, 3)`%.  
+
+The Apache score explains `r round(R2_Partial_Apache_Eth$partial.rsq[2]*100, 3)`% of the variation in mortality, and the ethnicity explains `r round(R2_Partial_Apache_Eth$partial.rsq[1]*100, 3)`%.  
+
+The SOFA score explains `r round(R2_Partial_SOFA_MIMIC$partial.rsq[2]*100, 3)`% of the variation in mortality, and the ethnicity explains `r round(R2_Partial_SOFA_MIMIC$partial.rsq[1]*100, 3)`% in the MIMIC-II database.  
+
+The SOFA score explains `r round(R2_Partial_SOFA_eICU$partial.rsq[2]*100, 3)`% of the variation in mortality, and the ethnicity explains `r round(R2_Partial_SOFA_eICU$partial.rsq[1]*100, 3)`% in the eICU database.  

@@ -1,0 +1,2 @@
+subject_id,hadm_id,icustay_id,SOFA,respiration,coagulation,liver,cardiovascular,cns,renal
+51973,153333,200001,6,,1,1,1,1,3
